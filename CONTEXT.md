@@ -192,4 +192,15 @@ Gate M3: MRR@10 >= 0.85 required before deploy
   and 0 table_cells, breaking section_tree and chunk quality on real
   10-K HTML files. File: src/ingestion/pdf_ingestor.py method _ingest_html()
 
-  
+  ## SESSION_9  ·  2026-04-30  ·  Bug #2 FIXED
+- src/ingestion/pdf_ingestor.py: rewrote _ingest_html() for full extraction
+    * <h1>-<h6> elements -> heading_positions with proper font_size mapping
+    * <b>/<strong> elements -> heading-like for SEC bold-only sections
+    * <table>/<th>/<td> cells -> table_cells with row+col headers
+    * Page-offset estimation (3000 chars/page rule of thumb)
+    * Strip <script>/<style>/<noscript> before get_text (cleaner raw_text)
+- tests/test_n01_html_regression.py: 25 new regression tests
+- Real impact: Apple 10-K HTML went from 0/0 to 100+/1000+ headings/cells
+- This unlocks SniperRAG (N06) which had no table_cells to search
+- Test totals: ~1305 + 25 = ~1330 passing
+- Next: Bug #3 — ChromaDB collection name mismatch between chunker and N08
