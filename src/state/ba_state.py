@@ -73,6 +73,7 @@ class BAState(BaseModel):
     chunk_count:          int        = 0
     bm25_index_path:      str        = ""
     chromadb_collection:  str        = ""
+    chromadb_data_dir:    str        = ""   # Bug #3 — N08 reads same dir
     chunk_metadata_prefix: str       = ""   # C8 — last prefix written
 
     # ── ROUTING (N04-N05) ─────────────────────────────────────────────────

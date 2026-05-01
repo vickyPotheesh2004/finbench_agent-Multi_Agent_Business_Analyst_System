@@ -133,9 +133,23 @@ class Chunker:
         state.bm25_index_path      = bm25_path
         state.chromadb_collection  = collection_name
 
+        # Bug #3: tell N08 BGE retriever which data_dir to read from
+        chromadb_path_norm = os.path.normpath(self.chromadb_dir)
+        if os.path.basename(chromadb_path_norm) == "chromadb":
+            data_dir = os.path.dirname(chromadb_path_norm) or "."
+        else:
+            data_dir = os.path.dirname(chromadb_path_norm) or "."
+        if hasattr(state, "chromadb_data_dir"):
+            state.chromadb_data_dir = data_dir
+        else:
+            try:
+                state.chromadb_data_dir = data_dir
+            except Exception:
+                pass  # Pydantic strict mode rejects unknown — handled in BAState fix below
+
         logger.info(
-            "N03 Chunker: %d chunks | bm25=%s | chromadb=%s",
-            len(chunks), bm25_path, collection_name,
+            "N03 Chunker: %d chunks | bm25=%s | chromadb=%s | data_dir=%s",
+            len(chunks), bm25_path, collection_name, data_dir,
         )
         return state
 
@@ -424,6 +438,12 @@ class Chunker:
     ) -> None:
         """Build ChromaDB vector collection from chunks.
 
+        Bug #3 fix (S13): delegates to BGERetriever.build_collection() so
+        the embeddings exactly match what N08 BGE Retriever uses at query
+        time. Previously the chunker used chromadb's built-in embedder,
+        and N08 used sentence-transformers with an instruction prefix —
+        producing different vectors and poor cosine similarity.
+
         Honours DISABLE_CHROMADB=1 env var (Session 6 patch).
         """
         if os.environ.get("DISABLE_CHROMADB"):
@@ -433,42 +453,43 @@ class Chunker:
             return
         if not chunks:
             return
+
+        # data_dir is the parent of chromadb_dir (BGE expects this layout)
+        # If chromadb_dir is "X/chromadb", data_dir = "X"
+        # Otherwise (custom path), use chromadb_dir's parent
+        chromadb_path = os.path.normpath(self.chromadb_dir)
+        if os.path.basename(chromadb_path) == "chromadb":
+            data_dir = os.path.dirname(chromadb_path) or "."
+        else:
+            # Custom layout — pass chromadb_dir's parent and let BGE create
+            # subdir. Worst case BGE creates X/chromadb/chromadb which is
+            # ugly but functional.
+            data_dir = os.path.dirname(chromadb_path) or "."
+
         try:
-            import chromadb
-            from chromadb.utils import embedding_functions
-            os.makedirs(self.chromadb_dir, exist_ok=True)
-            client = chromadb.PersistentClient(path=self.chromadb_dir)
-            bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name="BAAI/bge-m3",
-            )
-            collection = client.get_or_create_collection(
-                name               = collection_name,
-                metadata           = {"hnsw:space": "cosine"},
-                embedding_function = bge_ef,
-            )
-            batch_size = 100
-            for i in range(0, len(chunks), batch_size):
-                batch = chunks[i:i + batch_size]
-                collection.add(
-                    ids       = [c.chunk_id for c in batch],
-                    documents = [c.prefixed_text for c in batch],
-                    metadatas = [
-                        {
-                            "section":     c.section,
-                            "page":        c.page,
-                            "company":     c.company,
-                            "doc_type":    c.doc_type,
-                            "fiscal_year": c.fiscal_year,
-                        }
-                        for c in batch
-                    ],
-                )
-            logger.debug(
-                "ChromaDB collection '%s': %d documents",
-                collection_name, len(chunks),
-            )
+            from src.retrieval.bge_retriever import BGERetriever
         except ImportError:
-            logger.warning("chromadb not installed — ChromaDB index skipped")
+            logger.warning("BGERetriever import failed — ChromaDB index skipped")
+            return
+
+        try:
+            chunk_dicts = [c.to_dict() for c in chunks]
+            retriever   = BGERetriever()
+            ok = retriever.build_collection(
+                chunks          = chunk_dicts,
+                collection_name = collection_name,
+                data_dir        = data_dir,
+            )
+            if ok:
+                logger.debug(
+                    "ChromaDB collection '%s' built via BGE: %d documents",
+                    collection_name, len(chunks),
+                )
+            else:
+                logger.warning(
+                    "BGE.build_collection returned False for '%s'",
+                    collection_name,
+                )
         except Exception as exc:
             logger.warning("ChromaDB index build failed: %s", exc)
 

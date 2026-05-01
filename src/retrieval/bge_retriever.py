@@ -475,24 +475,28 @@ class BGELangChainRetriever:
     def get_relevant_documents(self, query: str) -> List[Any]:
         """Alias for older LangChain versions."""
         return self.invoke(query)
+    
+    def run_bge(state, data_dir: str = "data") -> object:
+        """
+        Convenience wrapper used by the LangGraph pipeline node N08.
 
+        Bug #3 fix (S13): if state has chromadb_data_dir (set by chunker),
+        use that to ensure BGE reads the same path the chunker wrote to.
 
-# ── Convenience wrapper for LangGraph N08 node ───────────────────────────────
+        Args:
+            state    : BAState object
+            data_dir : Default ChromaDB parent dir (overridden by state if present)
 
-def run_bge(state, data_dir: str = "data") -> object:
-    """
-    Convenience wrapper used by the LangGraph pipeline node N08.
+        Returns:
+            BAState with retrieval_stage_1 populated
+        """
+        # Prefer state's data_dir if chunker recorded it
+        state_data_dir = getattr(state, "chromadb_data_dir", "") or ""
+        effective_dir = state_data_dir if state_data_dir else data_dir
 
-    Args:
-        state    : BAState object
-        data_dir : ChromaDB storage directory
-
-    Returns:
-        BAState with retrieval_stage_1 populated
-    """
-    retriever = BGERetriever(
-        model_name = DEFAULT_MODEL,
-        top_k      = DEFAULT_TOP_K,
-        data_dir   = data_dir,
-    )
-    return retriever.run(state)
+        retriever = BGERetriever(
+            model_name = DEFAULT_MODEL,
+            top_k      = DEFAULT_TOP_K,
+            data_dir   = effective_dir,
+        )
+        return retriever.run(state)
