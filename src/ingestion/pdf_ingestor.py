@@ -2,14 +2,18 @@
 N01 PDF Ingestor - Multi-Format Document Ingestion
 PDR-BAAAI-001 Rev 1.0 Node N01
 
-Wires N01b ImageProcessor (opt-in) for OCR + chart vision extraction.
-
 CHANGELOG:
-  2026-04-30 S9  Bug #2: rewrote _ingest_html() to extract headings and
-                 table cells properly. Was: soup.get_text() only, returning
-                 0 headings + 0 table_cells. Now: parses <h1>-<h6>, <table>,
-                 <th>/<td>, <b>/<strong>, with page-offset estimation.
-                 This is the highest-impact fix in the campaign.
+  2026-04-30 S9   Bug #2:   rewrote _ingest_html() for full HTML extraction
+                            (h1-h6, b/strong, <table>).
+  2026-04-30 S10  Bug #2.1: real SEC 10-Ks are iXBRL — added auto-detection
+                            and ix:nonFraction/ix:nonNumeric fact extraction
+                            plus visual styled headings via inline CSS.
+  2026-04-30 S11  Bug #2.2: dual-pass parsing. Real iXBRL files need:
+                              (a) lxml-xml parser for ix: facts (namespaces)
+                              (b) lxml HTML parser for <span>/<div>/<p>
+                                  styled-heading layout (XHTML in body)
+                            Also fixed dei:DocumentFiscalYearFocus matching
+                            empty-text tags first → skip empties.
 """
 
 from __future__ import annotations
@@ -30,9 +34,13 @@ SUPPORTED_EXTENSIONS = {
 }
 
 HEADING_FONT_SIZE_MIN = 13.0
+HTML_CHARS_PER_PAGE   = 5000
 
-# Approx chars per visual page in a SEC 10-K HTML — used for page estimation
-HTML_CHARS_PER_PAGE = 3000
+HTML_HEADING_FONT_PT  = 11.0
+HTML_BOLD_WEIGHT_MIN  = 600
+
+MAX_IXBRL_FACTS  = 4000
+MAX_VISUAL_HEADS = 1500
 
 SEC_SECTIONS = [
     "business", "risk factors", "properties",
@@ -79,17 +87,7 @@ class TableCell:
 
 
 class PDFIngestor:
-    """
-    N01 Multi-Format Document Ingestor.
-
-    Two usage modes:
-        1. ingestor.ingest(file_path) -> dict
-        2. ingestor.run(ba_state)     -> BAState
-
-    Optional N01b image processing (opt-in via enable_images=True):
-        - OCR on scanned pages via pytesseract
-        - Chart/infographic value extraction via Gemma4 multimodal
-    """
+    """N01 Multi-Format Document Ingestor."""
 
     def __init__(
         self,
@@ -100,7 +98,6 @@ class PDFIngestor:
         self._llm          = llm_client
 
     def run(self, state) -> object:
-        """LangGraph N01 node entry point."""
         doc_path = getattr(state, "document_path", "") or ""
 
         if not doc_path:
@@ -132,7 +129,6 @@ class PDFIngestor:
             os.path.basename(doc_path),
         )
 
-        # N01b - Image Processor (opt-in)
         if self.enable_images and doc_path.lower().endswith(".pdf"):
             try:
                 from src.ingestion.image_processor import ImageProcessor
@@ -149,7 +145,6 @@ class PDFIngestor:
         return state
 
     def ingest(self, file_path: str) -> Dict:
-        """Ingest any supported document type."""
         ext = os.path.splitext(file_path)[1].lower()
 
         if ext == ".pdf":
@@ -423,22 +418,24 @@ class PDFIngestor:
         }
 
     # ════════════════════════════════════════════════════════════════════════
-    # HTML INGESTION  ── BUG #2 FIX LIVES HERE ──
+    # HTML / iXBRL INGESTION  ── Bugs #2, #2.1, #2.2 ──
     # ════════════════════════════════════════════════════════════════════════
 
     def _ingest_html(self, file_path: str) -> Dict:
-        """Bug #2 fix: full HTML extraction.
+        """Unified HTML / iXBRL ingestor — DUAL-PASS PARSING.
 
-        Old behaviour: soup.get_text() only → 0 headings, 0 tables.
-        New behaviour: extracts <h1>-<h6>, <table>/<th>/<td>, <b>/<strong>,
-                       and estimates page numbers from byte offset.
+        Pass 1 (lxml-xml): preserve namespaces for ix:nonFraction etc.
+        Pass 2 (lxml HTML): proper layout/CSS for <span>/<div> styled headings
+
+        This is the only reliable way to handle SEC iXBRL files where the
+        document is XHTML+namespaced-XBRL, and visual headings live inside
+        XHTML <span> tags wrapped by <ix:*> tags.
         """
         raw_text          = ""
         table_cells       = []
         heading_positions = []
 
         try:
-            # Suppress XML-as-HTML warning (SEC files are valid for our purpose)
             import warnings
             try:
                 from bs4 import XMLParsedAsHTMLWarning
@@ -451,48 +448,91 @@ class PDFIngestor:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
-            # Try lxml first, fall back to html.parser
+            is_ixbrl = (
+                "ix:nonFraction" in content
+                or "ix:nonNumeric" in content
+                or "xmlns:ix=" in content
+            )
+
+            # ── PASS 1: XML-aware parser for iXBRL facts + clean text ────
             try:
-                soup = BeautifulSoup(content, "lxml")
+                soup_xml = BeautifulSoup(content, "lxml-xml")
             except Exception:
-                soup = BeautifulSoup(content, "html.parser")
+                soup_xml = None
 
-            # ── Step 1: extract clean text ────────────────────────────────
-            # Remove script and style first so they don't leak into raw_text
-            for tag in soup(["script", "style", "noscript", "meta", "link"]):
-                tag.decompose()
-
-            raw_text = soup.get_text(separator="\n")
-            # Collapse 3+ newlines to 2 (preserve paragraph breaks)
-            raw_text = re.sub(r"\n{3,}", "\n\n", raw_text)
-            # Collapse multiple spaces but keep newlines
-            raw_text = re.sub(r"[ \t]+", " ", raw_text)
-
-            # ── Step 2: extract headings <h1>-<h6> ────────────────────────
-            heading_positions.extend(
-                self._html_extract_headings(soup, raw_text)
-            )
-
-            # ── Step 3: extract bold-as-heading <b>, <strong> ────────────
-            heading_positions.extend(
-                self._html_extract_bold_headings(soup, raw_text)
-            )
-
-            # ── Step 4: extract table cells ───────────────────────────────
-            table_cells.extend(
-                self._html_extract_table_cells(soup, raw_text)
-            )
-
-            # ── Step 5: dedupe headings (some 10-Ks repeat) ───────────────
-            heading_positions = self._dedupe_headings(heading_positions)
+            # ── PASS 2: HTML parser for visual layout (styled headings) ─
+            try:
+                soup_html = BeautifulSoup(content, "lxml")
+            except Exception:
+                try:
+                    soup_html = BeautifulSoup(content, "html.parser")
+                except Exception:
+                    soup_html = None
 
             logger.debug(
-                "HTML extracted: %d chars, %d headings, %d table cells",
+                "HTML ingest: iXBRL=%s | xml=%s | html=%s",
+                is_ixbrl, soup_xml is not None, soup_html is not None,
+            )
+
+            # Use HTML soup for raw_text (better text concatenation in HTML mode)
+            text_soup = soup_html if soup_html is not None else soup_xml
+            if text_soup is not None:
+                # Strip noise
+                for tag in text_soup(["script", "style", "noscript",
+                                      "meta", "link"]):
+                    tag.decompose()
+                raw_text = text_soup.get_text(separator="\n")
+                raw_text = re.sub(r"\n{3,}", "\n\n", raw_text)
+                raw_text = re.sub(r"[ \t]+", " ", raw_text)
+
+            # ── Step 1: iXBRL facts (XML soup, namespace-aware) ──────────
+            if is_ixbrl and soup_xml is not None:
+                ixbrl_cells = self._html_extract_ixbrl_facts(soup_xml, raw_text)
+                table_cells.extend(ixbrl_cells)
+                logger.debug("Extracted %d iXBRL facts", len(ixbrl_cells))
+
+            # ── Step 2: <h1>-<h6> headings (HTML soup) ───────────────────
+            if soup_html is not None:
+                heading_positions.extend(
+                    self._html_extract_headings(soup_html, raw_text)
+                )
+
+            # ── Step 3: <b>/<strong> bold-as-heading (HTML soup) ─────────
+            if soup_html is not None:
+                heading_positions.extend(
+                    self._html_extract_bold_headings(soup_html, raw_text)
+                )
+
+             # ── Step 4: visual styled headings (HTML soup) ───────────────
+            if soup_html is not None:
+                heading_positions.extend(
+                    self._html_extract_styled_headings(soup_html, raw_text)
+                )
+
+            # ── Step 4b: SEC-conventional section markers by TEXT PATTERN
+            #          (PART I, Item 1, Item 1A. etc. — these may be in
+            #           tiny 9pt spans in real 10-Ks, font-size won't find them)
+            if soup_html is not None:
+                heading_positions.extend(
+                    self._html_extract_sec_section_markers(soup_html, raw_text)
+                )
+
+            # ── Step 5: HTML table cells (HTML soup) ─────────────────────
+            if soup_html is not None:
+                table_cells.extend(
+                    self._html_extract_table_cells(soup_html, raw_text)
+                )
+
+            # ── Step 6: dedupe headings ───────────────────────────────────
+            heading_positions = self._dedupe_headings(heading_positions)
+            heading_positions = heading_positions[:MAX_VISUAL_HEADS]
+
+            logger.debug(
+                "HTML/iXBRL extracted: %d chars | %d headings | %d cells",
                 len(raw_text), len(heading_positions), len(table_cells),
             )
 
         except ImportError:
-            # bs4 missing — fall back to crude regex strip
             logger.warning("BeautifulSoup not installed — using regex fallback")
             try:
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -512,6 +552,17 @@ class PDFIngestor:
             raw_text, heading_positions
         )
 
+        # iXBRL files have AUTHORITATIVE metadata — always override regex
+        # when iXBRL values are present (regex may match noise like CIK
+        # numbers and produce garbage like 'FY0000')
+        ixbrl_meta = self._html_extract_ixbrl_metadata(file_path)
+        if ixbrl_meta.get("company_name"):
+            company_name = ixbrl_meta["company_name"]
+        if ixbrl_meta.get("fiscal_year"):
+            fiscal_year = ixbrl_meta["fiscal_year"]
+        if ixbrl_meta.get("doc_type"):
+            doc_type = ixbrl_meta["doc_type"]
+
         return {
             "raw_text":          raw_text,
             "table_cells":       table_cells,
@@ -523,15 +574,117 @@ class PDFIngestor:
 
     @staticmethod
     def _estimate_page_from_offset(offset: int) -> int:
-        """Estimate visual page number from byte offset in HTML text."""
         if offset <= 0:
             return 1
         return max(1, (offset // HTML_CHARS_PER_PAGE) + 1)
 
+    def _html_extract_ixbrl_facts(self, soup, raw_text: str) -> List[Dict]:
+        """Extract iXBRL <ix:nonFraction> and <ix:nonNumeric> as TableCells.
+        Must be called with the XML-mode soup (preserves namespaces)."""
+        cells: List[Dict] = []
+
+        nonfractions = (
+            soup.find_all("ix:nonFraction") or soup.find_all("nonFraction")
+        )
+        nonnumerics = (
+            soup.find_all("ix:nonNumeric") or soup.find_all("nonNumeric")
+        )
+
+        # Numeric facts
+        for tag in nonfractions[:MAX_IXBRL_FACTS]:
+            name  = (tag.get("name", "") or "").strip()
+            value = tag.get_text(strip=True)
+            if not name or not value:
+                continue
+
+            ctx   = (tag.get("contextRef", "") or "").strip()
+            scale = tag.get("scale", "") or ""
+
+            display_value = value
+            if scale and scale.lstrip("-").isdigit():
+                try:
+                    s = int(scale)
+                    if s != 0:
+                        display_value = f"{value} ×10^{s}"
+                except (ValueError, TypeError):
+                    pass
+
+            snippet = value[:20]
+            page = 1
+            if snippet:
+                idx = raw_text.find(snippet)
+                if idx >= 0:
+                    page = self._estimate_page_from_offset(idx)
+
+            cells.append(TableCell(
+                row_header   = name,
+                col_header   = ctx,
+                value        = display_value,
+                page         = page,
+                table_number = 0,
+                section      = "iXBRL_NUMERIC",
+            ).to_dict())
+
+        # Text facts
+        for tag in nonnumerics[:MAX_IXBRL_FACTS]:
+            name  = (tag.get("name", "") or "").strip()
+            value = tag.get_text(strip=True)[:200]
+            if not name or not value:
+                continue
+            ctx = (tag.get("contextRef", "") or "").strip()
+
+            cells.append(TableCell(
+                row_header   = name,
+                col_header   = ctx,
+                value        = value,
+                page         = 1,
+                table_number = 0,
+                section      = "iXBRL_TEXT",
+            ).to_dict())
+
+        return cells
+
+    def _html_extract_ixbrl_metadata(self, file_path: str) -> Dict[str, str]:
+        """Extract authoritative metadata from iXBRL dei: tags.
+
+        Bug #2.2: previously returned empty FY because some files have
+        MULTIPLE dei:DocumentFiscalYearFocus tags, the first being empty.
+        Now we skip empty-text matches.
+        """
+        out = {"company_name": "", "doc_type": "", "fiscal_year": ""}
+        try:
+            from bs4 import BeautifulSoup
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            soup = BeautifulSoup(content, "lxml-xml")
+        except Exception:
+            return out
+
+        def fact(name: str) -> str:
+            """Return text of FIRST tag with this name AND non-empty content."""
+            for tag in soup.find_all(["ix:nonNumeric", "nonNumeric"]):
+                if (tag.get("name", "") or "").strip() == name:
+                    text = tag.get_text(strip=True)
+                    if text:                 # SKIP empty values
+                        return text
+            return ""
+
+        company = fact("dei:EntityRegistrantName")
+        doctype = fact("dei:DocumentType")
+        fy_year = fact("dei:DocumentFiscalYearFocus")
+
+        if company:
+            out["company_name"] = company
+        if doctype:
+            out["doc_type"] = doctype
+        if fy_year and fy_year.isdigit() and len(fy_year) == 4 and fy_year != "0000":
+            out["fiscal_year"] = f"FY{fy_year}"
+
+        return out
+
     def _html_extract_headings(self, soup, raw_text: str) -> List[Dict]:
         """Extract <h1>-<h6> elements as heading_positions."""
         out = []
-        # font_size by level: h1=20, h2=18, h3=16, h4=14, h5=13, h6=13
         size_by_level = {1: 20.0, 2: 18.0, 3: 16.0, 4: 14.0, 5: 13.0, 6: 13.0}
 
         for level in range(1, 7):
@@ -539,14 +692,11 @@ class PDFIngestor:
                 text = tag.get_text(separator=" ", strip=True)
                 if not text or len(text) < 3 or len(text) > 200:
                     continue
-
-                # Estimate page by finding text in raw_text
                 page = 1
                 snippet = text[:30]
                 idx = raw_text.find(snippet)
                 if idx >= 0:
                     page = self._estimate_page_from_offset(idx)
-
                 out.append({
                     "text":      text,
                     "font_size": size_by_level[level],
@@ -556,22 +706,85 @@ class PDFIngestor:
         return out
 
     def _html_extract_bold_headings(self, soup, raw_text: str) -> List[Dict]:
-        """Extract <b>/<strong> short text as candidate headings.
-
-        SEC 10-Ks often use bold text as section markers without <hN> tags.
-        We treat <b>/<strong> with 3-100 chars and 1-12 words as heading-like.
-        """
+        """Extract <b>/<strong> short text as candidate headings."""
         out = []
         for tag in soup.find_all(["b", "strong"]):
             text = tag.get_text(separator=" ", strip=True)
             if not text:
                 continue
             wc = len(text.split())
-            # Reject sentences (likely mid-paragraph emphasis)
             if len(text) < 3 or len(text) > 120 or wc > 12:
                 continue
-            # Reject pure numbers / page refs
             if re.match(r"^[\d\s,.\-$()]+$", text):
+                continue
+            page = 1
+            snippet = text[:30]
+            idx = raw_text.find(snippet)
+            if idx >= 0:
+                page = self._estimate_page_from_offset(idx)
+            out.append({
+                "text":      text,
+                "font_size": 13.5,
+                "is_bold":   True,
+                "page":      page,
+            })
+        return out
+
+    def _html_extract_styled_headings(
+        self, soup, raw_text: str
+    ) -> List[Dict]:
+        """Extract elements with inline font-size + font-weight CSS as headings.
+
+        Bug #2.2 fix: must be called with HTML-mode soup (lxml), not XML soup,
+        because real iXBRL files wrap visual <span>/<div> tags in <ix:*> XML
+        namespaces that hide them from XML mode tag-name searches.
+        """
+        out = []
+        candidates = soup.find_all(["span", "div", "p", "td"])
+
+        for elem in candidates:
+            style = (elem.get("style", "") or "").lower()
+            if not style:
+                continue
+
+            size_match = re.search(r"font-size\s*:\s*([\d.]+)\s*pt", style)
+            if not size_match:
+                continue
+            try:
+                font_pt = float(size_match.group(1))
+            except (ValueError, TypeError):
+                continue
+
+            if font_pt < HTML_HEADING_FONT_PT:
+                continue
+
+            weight_match = re.search(r"font-weight\s*:\s*([\w\d]+)", style)
+            is_bold = False
+            if weight_match:
+                w = weight_match.group(1).lower()
+                if w in ("bold", "bolder"):
+                    is_bold = True
+                else:
+                    try:
+                        if int(w) >= HTML_BOLD_WEIGHT_MIN:
+                            is_bold = True
+                    except ValueError:
+                        pass
+
+            # Heading must be either: bold, OR very large font (>=14pt)
+            if not is_bold and font_pt < 14.0:
+                continue
+
+            text = elem.get_text(separator=" ", strip=True)
+            if not text:
+                continue
+
+            wc = len(text.split())
+            if len(text) < 3 or len(text) > 200 or wc > 25:
+                continue
+            if re.match(r"^[\d\s,.\-$()%\\]+$", text):
+                continue
+            if text.islower() and wc > 3:
                 continue
 
             page = 1
@@ -582,7 +795,52 @@ class PDFIngestor:
 
             out.append({
                 "text":      text,
-                "font_size": 13.5,    # H2-borderline
+                "font_size": font_pt,
+                "is_bold":   is_bold,
+                "page":      page,
+            })
+
+        return out
+    # SEC section pattern: PART I/II/III/IV, Item 1/1A/2/.../15/16
+    _SEC_SECTION_RX = re.compile(
+        r"^(?:"
+        r"PART\s+(?:I|II|III|IV|V|VI|VII|VIII|IX|X)"  # PART I-X
+        r"|Item\s+\d{1,2}[A-Z]?\."                     # Item 1., Item 1A., etc.
+        r")\s*$",
+        re.IGNORECASE,
+    )
+
+    def _html_extract_sec_section_markers(
+        self, soup, raw_text: str
+    ) -> List[Dict]:
+        """Find SEC-conventional section markers by TEXT PATTERN.
+
+        Real SEC 10-Ks often put 'PART I' and 'Item 1.' in tiny 9pt spans
+        that font-size detection misses. We catch these by matching the
+        text pattern: PART [roman] or Item N[letter].
+        """
+        out = []
+        seen = set()
+        # Search both <span> (typical body) and <div> (typical wrapper)
+        for tag in soup.find_all(["span", "div", "p", "a", "td"]):
+            text = tag.get_text(separator=" ", strip=True)
+            if not text or len(text) > 30:
+                continue
+            if not self._SEC_SECTION_RX.match(text):
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            page = 1
+            idx = raw_text.find(text)
+            if idx >= 0:
+                page = self._estimate_page_from_offset(idx)
+
+            out.append({
+                "text":      text,
+                "font_size": 14.0,   # treat as heading-equivalent for chunker
                 "is_bold":   True,
                 "page":      page,
             })
@@ -597,7 +855,6 @@ class PDFIngestor:
             if len(rows) < 2:
                 continue
 
-            # Estimate page from table position
             page = 1
             first_row_text = (
                 rows[0].get_text(" ", strip=True) if rows else ""
@@ -607,8 +864,6 @@ class PDFIngestor:
                 if idx >= 0:
                     page = self._estimate_page_from_offset(idx)
 
-            # Detect header row (uses <th>, OR first row with all bold cells,
-            # OR just take row 0 as header)
             header_row = None
             for r in rows:
                 ths = r.find_all("th")
@@ -623,7 +878,6 @@ class PDFIngestor:
                 for c in header_row.find_all(["th", "td"])
             ]
 
-            # Determine data rows
             try:
                 start_idx = rows.index(header_row) + 1
             except ValueError:
@@ -638,7 +892,6 @@ class PDFIngestor:
                 row_header = row_cells[0].get_text(" ", strip=True)
                 for col_idx, c in enumerate(row_cells[1:], start=1):
                     value = c.get_text(" ", strip=True)
-                    # Skip empty cells, skip pure punctuation noise
                     if not value or value in ("—", "-", "$", "(", ")"):
                         continue
                     col_header = (
@@ -675,7 +928,6 @@ class PDFIngestor:
                 raw_text = f.read()
         except Exception as exc:
             logger.warning("TXT error: %s", exc)
-
         return {
             "raw_text": raw_text, "table_cells": [],
             "heading_positions": [],
@@ -690,7 +942,6 @@ class PDFIngestor:
             raw_text = json.dumps(data, indent=2)
         except Exception as exc:
             logger.warning("JSON error: %s", exc)
-
         return {
             "raw_text": raw_text, "table_cells": [],
             "heading_positions": [],
