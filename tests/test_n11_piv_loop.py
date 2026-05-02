@@ -543,3 +543,82 @@ class TestConvenienceWrapper:
         result = run_analyst_pod(state, llm_client=llm)
         assert hasattr(result, "analyst_output")
         assert result.seed == 42
+
+    # ════════════════════════════════════════════════════════════════════════════
+# BUG #4 — PIV early-exit on empty retrieval
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestBug4EarlyExit:
+    """Regression tests for Bug #4: pointless retries on empty retrieval.
+
+    Before fix: empty chunks → Planner runs → Implementor RETRIEVAL_MISS
+                → loop continues for full retry budget → ~3-9 min wasted.
+    After fix:  empty chunks → return immediately (~0.1s).
+    """
+
+    def _build_controller(self):
+        """Build PIVLoopController and patch its sub-agents with mocks."""
+        from unittest.mock import MagicMock
+        ctrl = PIVLoopController(
+            llm_client = MockLLMClient(responses=[""]),
+            pod_role   = "analyst",
+        )
+        # Patch sub-agents AFTER construction so we can count calls
+        ctrl.planner     = MagicMock()
+        ctrl.implementor = MagicMock()
+        ctrl.validator   = MagicMock()
+        return ctrl
+
+    def test_empty_chunks_exits_without_calling_planner(self):
+        """Bug #4: chunks=[] must exit BEFORE Planner runs."""
+        ctrl = self._build_controller()
+
+        result = ctrl.run_piv(
+            query            = "What was net income?",
+            chunks           = [],
+            query_type       = "text",
+            query_difficulty = "medium",
+        )
+
+        # Critical: Planner, Implementor, Validator must NEVER be called
+        assert ctrl.planner.run.call_count     == 0, (
+            f"Bug #4 regression: Planner called "
+            f"{ctrl.planner.run.call_count}× on empty chunks (must be 0)"
+        )
+        assert ctrl.implementor.run.call_count == 0
+        assert ctrl.validator.run.call_count   == 0
+
+        assert result.retries_used   == 0
+        assert result.low_confidence is True
+        assert result.confidence     == 0.0
+        assert "RETRIEVAL_MISS" in result.answer
+
+    def test_empty_chunks_returns_quickly(self):
+        """Bug #4: empty chunks path must return without blocking."""
+        import time
+        ctrl = self._build_controller()
+        t0 = time.time()
+        result = ctrl.run_piv(
+            query="anything",
+            chunks=[],
+            query_type="text",
+            query_difficulty="medium",
+        )
+        elapsed = time.time() - t0
+        assert elapsed < 1.0, (
+            f"Bug #4: empty-chunks path took {elapsed:.2f}s "
+            f"(must be <1s; previously was 3-9 min)"
+        )
+
+    def test_empty_chunks_returns_low_confidence(self):
+        """Bug #4: early exit must mark low_confidence=True."""
+        ctrl = self._build_controller()
+        result = ctrl.run_piv(
+            query="anything",
+            chunks=[],
+            query_type="text",
+            query_difficulty="medium",
+        )
+        assert result.retries_used == 0
+        assert result.low_confidence is True
+        assert result.confidence == 0.0

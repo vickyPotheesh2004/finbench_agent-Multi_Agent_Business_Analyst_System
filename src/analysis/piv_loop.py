@@ -775,6 +775,26 @@ class PIVLoopController:
         # Format context string for LLM calls
         retrieved_context = self._format_context(chunks)
 
+        # ── EARLY EXIT (Bug #4): chunks empty → don't waste LLM calls ────────
+        # No retrieval = no possible answer. Save 3-9 minutes of pointless retries.
+        chunks_empty = not chunks or len(chunks) == 0
+        if chunks_empty:
+            logger.warning(
+                "N11: chunks empty — early exit, skipping PIV loop entirely"
+            )
+            return PIVResult(
+                answer           = "[RETRIEVAL_MISS — no relevant chunks retrieved]",
+                confidence       = 0.0,
+                citations        = [],
+                computation      = "N/A",
+                retries_used     = 0,
+                low_confidence   = True,
+                validator_checks = {},
+                reject_reasons   = ["RETRIEVAL_MISS: no chunks available"],
+                pod_role         = self.pod_role,
+                planner_plan     = "",
+            )
+
         # ── Step 1: Planner (runs ONCE) ───────────────────────────────────────
         plan = self.planner.run(
             query            = query,
@@ -818,6 +838,27 @@ class PIVLoopController:
                 logger.info(
                     "N11: RETRIEVAL_MISS — needed: %s", impl.needed_info[:100]
                 )
+                # Bug #4: after first RETRIEVAL_MISS, exit early.
+                # Retrying with the same empty/insufficient context can't
+                # change the outcome — saves 60-180s per question.
+                if retry_count >= 1:
+                    logger.warning(
+                        "N11: 2nd consecutive RETRIEVAL_MISS — early exit"
+                    )
+                    return PIVResult(
+                        answer           = "[RETRIEVAL_MISS — context insufficient after retry]",
+                        confidence       = 0.0,
+                        citations        = [],
+                        computation      = "N/A",
+                        retries_used     = retry_count,
+                        low_confidence   = True,
+                        validator_checks = {},
+                        reject_reasons   = [
+                            f"RETRIEVAL_MISS: {impl.needed_info[:200]}"
+                        ],
+                        pod_role         = self.pod_role,
+                        planner_plan     = plan.analysis_plan,
+                    )
                 retry_count += 1
                 continue
 
