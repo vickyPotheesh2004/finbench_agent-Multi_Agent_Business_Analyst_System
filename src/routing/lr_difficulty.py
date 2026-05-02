@@ -427,12 +427,24 @@ class LRDifficultyPredictor:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _ensure_trained(self) -> None:
-        """Auto-train if model not yet trained or loaded."""
+        """Auto-train if model not yet trained or loaded.
+
+        Bug #7 fix: persist trained model to disk so next instance loads
+        instead of retraining (saved ~3s per pipeline run).
+        """
         if not self._is_trained:
             loaded = self.load()
             if not loaded:
                 logger.info("N05 LR: no saved model — training now")
                 self.train()
+                # Bug #7: persist immediately
+                try:
+                    self.save()
+                    logger.info("N05 LR: model saved for reuse")
+                except Exception as exc:
+                    logger.warning(
+                        "N05 LR: save after train failed: %s", exc
+                    )
 
 
 # ── Convenience wrapper for LangGraph N05 node ───────────────────────────────

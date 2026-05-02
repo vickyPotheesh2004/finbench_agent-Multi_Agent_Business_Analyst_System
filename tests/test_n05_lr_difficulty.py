@@ -342,3 +342,41 @@ class TestConvenienceWrapper:
         )
         result = run_lr_difficulty(state, model_dir=str(tmp_path))
         assert result.seed == 42
+
+# ════════════════════════════════════════════════════════════════════════════
+# BUG #7 — LR Difficulty must persist after first train
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestBug7LRPersistence:
+    """Regression for Bug #7: LR Difficulty retrained on every pipeline run."""
+
+    def test_first_use_saves_model_to_disk(self, tmp_path):
+        """Bug #7: _ensure_trained() must save after training."""
+        from src.routing.lr_difficulty import (
+            LRDifficultyPredictor,
+            _MODEL_FILENAME,
+            _VECTORIZER_FILENAME,
+        )
+        predictor = LRDifficultyPredictor(model_dir=str(tmp_path))
+        predictor.predict("What was net income?")
+
+        model_path      = os.path.join(str(tmp_path), _MODEL_FILENAME)
+        vectorizer_path = os.path.join(str(tmp_path), _VECTORIZER_FILENAME)
+        assert os.path.exists(model_path)
+        assert os.path.exists(vectorizer_path)
+
+    def test_second_instance_loads_quickly(self, tmp_path):
+        """Bug #7: 2nd instance should load instead of retrain."""
+        from src.routing.lr_difficulty import LRDifficultyPredictor
+        import time
+
+        p1 = LRDifficultyPredictor(model_dir=str(tmp_path))
+        p1.predict("seed")
+
+        t0 = time.time()
+        p2 = LRDifficultyPredictor(model_dir=str(tmp_path))
+        p2.predict("another")
+        elapsed = time.time() - t0
+        assert elapsed < 2.0, (
+            f"Bug #7: 2nd LR instance took {elapsed:.2f}s (must be <2s)"
+        )
