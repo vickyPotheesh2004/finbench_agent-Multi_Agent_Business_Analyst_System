@@ -486,3 +486,64 @@ class TestGateM3MRR:
             f"Top-1 accuracy {accuracy:.1%} < 70% — "
             f"{hits}/{len(self.GOLD_QUERIES)} correct at rank 1"
         )
+
+# ════════════════════════════════════════════════════════════════════════════
+# BUG #8 — BGE-M3 should not load model when collection missing or disabled
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestBug8LazyLoad:
+    """Regression for Bug #8: model loaded even when not needed.
+
+    Before fix: retrieve() with missing collection still loaded ~1.5GB model.
+    After fix:  collection check happens first; model never loaded if not found.
+    """
+
+    def test_disabled_env_skips_model_load(self, tmp_path, monkeypatch):
+        """DISABLE_BGE env var must prevent model load entirely."""
+        monkeypatch.setenv("DISABLE_BGE", "1")
+        r = BGERetriever(data_dir=str(tmp_path))
+        results = r.retrieve(
+            query="anything",
+            collection_name="any",
+            data_dir=str(tmp_path),
+        )
+        assert results == []
+        # Critical: model must still be None after retrieve attempt
+        assert r._model is None, (
+            "Bug #8: DISABLE_BGE must prevent model load"
+        )
+
+    def test_disable_chromadb_also_disables_bge(self, tmp_path, monkeypatch):
+        """DISABLE_CHROMADB env var must also disable BGE."""
+        monkeypatch.setenv("DISABLE_CHROMADB", "1")
+        r = BGERetriever(data_dir=str(tmp_path))
+        # Both retrieve and build_collection should refuse
+        assert r.retrieve("q", "c", str(tmp_path)) == []
+        assert r.build_collection([{"text": "x"}], "c", str(tmp_path)) is False
+
+    def test_missing_collection_skips_model_load(self, tmp_path):
+        """Collection check must happen BEFORE model load."""
+        r = BGERetriever(data_dir=str(tmp_path))
+        results = r.retrieve(
+            query="net income",
+            collection_name="nonexistent_collection_xyz",
+            data_dir=str(tmp_path),
+        )
+        assert results == []
+        # Model must NOT have been loaded
+        assert r._model is None, (
+            "Bug #8: missing collection should skip model load "
+            "(saved ~5s + 1.5GB RAM)"
+        )
+
+    def test_empty_query_skips_model_load(self, tmp_path):
+        """Empty query must early-exit without model load."""
+        r = BGERetriever(data_dir=str(tmp_path))
+        r.retrieve(query="", collection_name="x", data_dir=str(tmp_path))
+        assert r._model is None
+
+    def test_empty_collection_name_skips_model_load(self, tmp_path):
+        """Empty collection_name must early-exit without model load."""
+        r = BGERetriever(data_dir=str(tmp_path))
+        r.retrieve(query="x", collection_name="", data_dir=str(tmp_path))
+        assert r._model is None

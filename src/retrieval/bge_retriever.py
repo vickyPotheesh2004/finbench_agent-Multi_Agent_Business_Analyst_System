@@ -2,26 +2,9 @@
 N08 BGE-M3 Semantic Retriever — Tier 3 Dense Embedding Search
 PDR-BAAAI-001 · Rev 1.0 · Node N08
 
-Purpose:
-    Dense semantic retrieval using BAAI/bge-m3 embeddings stored in ChromaDB.
-    Runs in parallel with N07 BM25. Returns top-10 chunks by cosine similarity.
-    Results feed into N09 RRF+Reranker for merging with BM25 results.
-
-Constraints satisfied:
-    C1  $0 cost — sentence-transformers is free, ChromaDB is free
-    C2  100% local — zero network calls during inference
-    C5  seed=42 via SeedManager
-    C7  N/A at this node (no LLM prompt)
-    C8  All results carry 5-field metadata prefix
-    C9  No _rlef_ fields touched
-
-Gate M3:
-    MRR@10 >= 0.85 on FinanceBench query eval set required before deploy.
-    Evaluated by: python eval/run_eval.py --gate m3 --seed 42
-
 CHANGELOG:
-  2026-04-30 S13  Bug #3: run_bge() now reads state.chromadb_data_dir to ensure
-                  retriever path matches what chunker wrote to.
+  2026-04-30 S13  Bug #3: run_bge() reads state.chromadb_data_dir
+  2026-04-30 S15  Bug #8: collection check before model load + DISABLE_BGE
 """
 
 from __future__ import annotations
@@ -32,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Lazy imports — only loaded when BGERetriever is actually used
+# Lazy imports
 _sentence_transformers = None
 _chromadb = None
 
@@ -57,23 +40,16 @@ def _get_chromadb():
 
 DEFAULT_MODEL      = "BAAI/bge-m3"
 DEFAULT_TOP_K      = 10
-MIN_SIMILARITY     = 0.0   # include all results — RRF handles filtering
+MIN_SIMILARITY     = 0.0
 RETRIEVER_LABEL    = "bge_m3"
 
-# ChromaDB collection name prefix
 _COLLECTION_PREFIX = "finbench_"
 
 
 # ── BGERetriever ──────────────────────────────────────────────────────────────
 
 class BGERetriever:
-    """
-    N08 BGE-M3 Semantic Retriever.
-
-    Two usage modes:
-        1. retriever.retrieve(query, collection_name, data_dir) → List[Dict]
-        2. retriever.run(ba_state)                              → BAState
-    """
+    """N08 BGE-M3 Semantic Retriever."""
 
     def __init__(
         self,
@@ -84,16 +60,20 @@ class BGERetriever:
         self.model_name = model_name
         self.top_k      = top_k
         self.data_dir   = data_dir
-        self._model     = None   # lazy loaded
-        self._client    = None   # lazy loaded ChromaDB client
+        self._model     = None
+        self._client    = None
+        # Bug #8: respect DISABLE_BGE / DISABLE_CHROMADB env vars
+        self._disabled  = bool(os.environ.get("DISABLE_BGE")) or \
+                          bool(os.environ.get("DISABLE_CHROMADB"))
+        if self._disabled:
+            logger.info(
+                "N08: BGE-M3 disabled (DISABLE_BGE or DISABLE_CHROMADB set)"
+            )
 
     # ── LangGraph pipeline node entry point ───────────────────────────────────
 
     def run(self, state) -> object:
-        """
-        Reads:  state.query, state.chromadb_collection
-        Writes: state.retrieval_stage_1 (top-10 semantic chunks)
-        """
+        """LangGraph N08 node entry point."""
         query      = getattr(state, "query",               "") or ""
         collection = getattr(state, "chromadb_collection", "") or ""
 
@@ -130,19 +110,29 @@ class BGERetriever:
         data_dir:        str  = "data",
         top_k:           int  = DEFAULT_TOP_K,
     ) -> List[Dict]:
-        """
-        Embed query and search ChromaDB collection.
+        """Embed query and search ChromaDB collection.
+
+        Bug #8: check collection EXISTS before loading the BGE model.
         """
         if not query or not collection_name:
             return []
 
-        try:
-            model      = self._load_model()
-            collection = self._load_collection(collection_name, data_dir)
+        if self._disabled:
+            logger.warning("N08: BGE-M3 disabled — returning empty")
+            return []
 
+        try:
+            # Check collection exists FIRST (cheap) before loading model (expensive)
+            collection = self._load_collection(collection_name, data_dir)
             if collection is None:
-                logger.warning("N08: collection '%s' not found", collection_name)
+                logger.warning(
+                    "N08: collection '%s' not found — skipping model load",
+                    collection_name,
+                )
                 return []
+
+            # Only NOW do we load the 1.5GB model
+            model = self._load_model()
 
             # Embed the query — BGE-M3 instruction prefix improves retrieval
             query_with_instruction = (
@@ -175,13 +165,16 @@ class BGERetriever:
         collection_name: str,
         data_dir:        str = "data",
     ) -> bool:
-        """
-        Embed all chunks and store in ChromaDB collection.
+        """Embed all chunks and store in ChromaDB collection.
 
-        Called at N03 ingestion time (or on first query if collection missing).
+        Bug #8: respect DISABLE_BGE env var.
         """
         if not chunks:
             logger.warning("N08: No chunks provided — skipping collection build")
+            return False
+
+        if self._disabled:
+            logger.warning("N08: BGE-M3 disabled — skipping collection build")
             return False
 
         try:
@@ -193,7 +186,7 @@ class BGERetriever:
                 client.delete_collection(name=collection_name)
                 logger.info("N08: Deleted existing collection '%s'", collection_name)
             except Exception:
-                pass  # Collection did not exist — that is fine
+                pass
 
             collection = client.create_collection(
                 name     = collection_name,
@@ -211,10 +204,7 @@ class BGERetriever:
                 batch_ids   = ids[i:i + batch_size]
                 batch_meta  = metadatas[i:i + batch_size]
 
-                # Instruction prefix for document chunks
-                instructed = [
-                    f"passage: {t}" for t in batch_texts
-                ]
+                instructed = [f"passage: {t}" for t in batch_texts]
                 embeddings = model.encode(
                     instructed,
                     normalize_embeddings=True,
@@ -250,9 +240,7 @@ class BGERetriever:
         data_dir:        str = "data",
         top_k:           int = DEFAULT_TOP_K,
     ):
-        """
-        Return a LangChain-compatible retriever wrapping this BGERetriever.
-        """
+        """Return a LangChain-compatible retriever wrapping this BGERetriever."""
         return BGELangChainRetriever(
             bge_retriever   = self,
             collection_name = collection_name,
@@ -294,7 +282,7 @@ class BGERetriever:
             logger.info("N08: Loading model '%s' ...", self.model_name)
             self._model = st.SentenceTransformer(
                 self.model_name,
-                device="cpu",   # C2: local only — no GPU required
+                device="cpu",
             )
             logger.info("N08: Model loaded — %s", self.model_name)
         return self._model
@@ -320,10 +308,7 @@ class BGERetriever:
 
     @staticmethod
     def _build_metadata(chunk: Dict) -> Dict:
-        """
-        Build ChromaDB metadata dict from a chunk.
-        All values must be str, int, float, or bool for ChromaDB.
-        """
+        """Build ChromaDB metadata dict from a chunk."""
         return {
             "chunk_id":    str(chunk.get("chunk_id",    "")),
             "company":     str(chunk.get("company",     "UNKNOWN")),
@@ -336,12 +321,7 @@ class BGERetriever:
 
     @staticmethod
     def _format_results(chroma_results: Dict, top_k: int) -> List[Dict]:
-        """
-        Convert raw ChromaDB query results to pipeline-standard format.
-
-        ChromaDB returns distances (lower = more similar for cosine).
-        We convert to similarity score: score = 1 - distance.
-        """
+        """Convert raw ChromaDB query results to pipeline-standard format."""
         formatted = []
 
         documents = chroma_results.get("documents", [[]])[0]
@@ -351,7 +331,6 @@ class BGERetriever:
         for rank, (doc, meta, dist) in enumerate(
             zip(documents, metadatas, distances), start=1
         ):
-            # Convert cosine distance to similarity score
             similarity = max(0.0, 1.0 - float(dist))
 
             result = {
@@ -378,11 +357,8 @@ class BGERetriever:
 # ── LangChain compatibility wrapper ──────────────────────────────────────────
 
 class BGELangChainRetriever:
-    """
-    Thin wrapper making BGERetriever compatible with LangChain's
-    retriever interface (used by N09 EnsembleRetriever).
-    Implements invoke(query) → List[Document]
-    """
+    """Thin wrapper making BGERetriever compatible with LangChain's
+    retriever interface (used by N09 EnsembleRetriever)."""
 
     def __init__(
         self,
@@ -397,10 +373,7 @@ class BGELangChainRetriever:
         self._top_k          = top_k
 
     def invoke(self, query: str) -> List[Any]:
-        """
-        LangChain-compatible invoke method.
-        Returns List[Document] with page_content and metadata.
-        """
+        """LangChain-compatible invoke method."""
         from langchain_core.documents import Document
 
         results = self._retriever.retrieve(
@@ -436,18 +409,9 @@ class BGELangChainRetriever:
 # ── Convenience wrapper for LangGraph N08 node ───────────────────────────────
 
 def run_bge(state, data_dir: str = "data") -> object:
-    """
-    Convenience wrapper used by the LangGraph pipeline node N08.
+    """Convenience wrapper used by the LangGraph pipeline node N08.
 
-    Bug #3 fix (S13): if state has chromadb_data_dir (set by chunker),
-    use that to ensure BGE reads the same path the chunker wrote to.
-
-    Args:
-        state    : BAState object
-        data_dir : Default ChromaDB parent dir (overridden by state if present)
-
-    Returns:
-        BAState with retrieval_stage_1 populated
+    Bug #3 fix: if state has chromadb_data_dir, use that.
     """
     state_data_dir = getattr(state, "chromadb_data_dir", "") or ""
     effective_dir = state_data_dir if state_data_dir else data_dir
