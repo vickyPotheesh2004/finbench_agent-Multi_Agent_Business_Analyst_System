@@ -18,6 +18,10 @@ Constraints satisfied:
 Gate M3:
     MRR@10 >= 0.85 on FinanceBench query eval set required before deploy.
     Evaluated by: python eval/run_eval.py --gate m3 --seed 42
+
+CHANGELOG:
+  2026-04-30 S13  Bug #3: run_bge() now reads state.chromadb_data_dir to ensure
+                  retriever path matches what chunker wrote to.
 """
 
 from __future__ import annotations
@@ -29,7 +33,6 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Lazy imports — only loaded when BGERetriever is actually used
-# This keeps import time fast and avoids loading 500MB model at startup
 _sentence_transformers = None
 _chromadb = None
 
@@ -70,14 +73,6 @@ class BGERetriever:
     Two usage modes:
         1. retriever.retrieve(query, collection_name, data_dir) → List[Dict]
         2. retriever.run(ba_state)                              → BAState
-
-    The retriever is stateless — it does not cache the model between
-    instantiations. Use a single instance per pipeline run for performance.
-
-    Example:
-        retriever = BGERetriever(model_name="BAAI/bge-m3", top_k=10)
-        state     = retriever.run(ba_state)
-        results   = state.retrieval_stage_1  # top-10 semantic chunks
     """
 
     def __init__(
@@ -96,20 +91,11 @@ class BGERetriever:
 
     def run(self, state) -> object:
         """
-        LangGraph N08 node entry point.
-
-        Reads:  state.query, state.chromadb_collection, state.session_id
+        Reads:  state.query, state.chromadb_collection
         Writes: state.retrieval_stage_1 (top-10 semantic chunks)
-
-        Args:
-            state: BAState object
-
-        Returns:
-            BAState with retrieval_stage_1 populated
         """
         query      = getattr(state, "query",               "") or ""
         collection = getattr(state, "chromadb_collection", "") or ""
-        session_id = getattr(state, "session_id",          "") or "default"
 
         if not query:
             logger.warning("N08 BGE-M3: empty query — returning empty results")
@@ -146,17 +132,6 @@ class BGERetriever:
     ) -> List[Dict]:
         """
         Embed query and search ChromaDB collection.
-
-        Args:
-            query           : Analyst question string
-            collection_name : ChromaDB collection name (from ba_state)
-            data_dir        : Directory where ChromaDB is stored
-            top_k           : Number of results to return
-
-        Returns:
-            List of result dicts, each containing:
-                text, chunk_id, rank, bge_score, retriever,
-                company, doc_type, fiscal_year, section, page, prefix
         """
         if not query or not collection_name:
             return []
@@ -204,16 +179,6 @@ class BGERetriever:
         Embed all chunks and store in ChromaDB collection.
 
         Called at N03 ingestion time (or on first query if collection missing).
-
-        Args:
-            chunks          : List of chunk dicts from N03 Chunker.
-                              Each must have: text, chunk_id, company,
-                              doc_type, fiscal_year, section, page, prefix
-            collection_name : Name for the ChromaDB collection
-            data_dir        : Directory to persist ChromaDB
-
-        Returns:
-            True if successful, False on error
         """
         if not chunks:
             logger.warning("N08: No chunks provided — skipping collection build")
@@ -235,7 +200,7 @@ class BGERetriever:
                 metadata = {"hnsw:space": "cosine"},
             )
 
-            # Batch embed for efficiency — BGE-M3 handles batches well
+            # Batch embed for efficiency
             batch_size = 32
             texts      = [c.get("text", "") for c in chunks]
             ids        = [c.get("chunk_id", f"chunk_{i}") for i, c in enumerate(chunks)]
@@ -287,10 +252,6 @@ class BGERetriever:
     ):
         """
         Return a LangChain-compatible retriever wrapping this BGERetriever.
-        Used by N09 EnsembleRetriever for RRF merging.
-
-        Returns:
-            BGELangChainRetriever instance (implements invoke())
         """
         return BGELangChainRetriever(
             bge_retriever   = self,
@@ -380,10 +341,6 @@ class BGERetriever:
 
         ChromaDB returns distances (lower = more similar for cosine).
         We convert to similarity score: score = 1 - distance.
-
-        Returns list of dicts with keys:
-            text, chunk_id, rank, bge_score, retriever,
-            company, doc_type, fiscal_year, section, page, prefix
         """
         formatted = []
 
@@ -424,7 +381,6 @@ class BGELangChainRetriever:
     """
     Thin wrapper making BGERetriever compatible with LangChain's
     retriever interface (used by N09 EnsembleRetriever).
-
     Implements invoke(query) → List[Document]
     """
 
@@ -475,28 +431,30 @@ class BGELangChainRetriever:
     def get_relevant_documents(self, query: str) -> List[Any]:
         """Alias for older LangChain versions."""
         return self.invoke(query)
-    
-    def run_bge(state, data_dir: str = "data") -> object:
-        """
-        Convenience wrapper used by the LangGraph pipeline node N08.
 
-        Bug #3 fix (S13): if state has chromadb_data_dir (set by chunker),
-        use that to ensure BGE reads the same path the chunker wrote to.
 
-        Args:
-            state    : BAState object
-            data_dir : Default ChromaDB parent dir (overridden by state if present)
+# ── Convenience wrapper for LangGraph N08 node ───────────────────────────────
 
-        Returns:
-            BAState with retrieval_stage_1 populated
-        """
-        # Prefer state's data_dir if chunker recorded it
-        state_data_dir = getattr(state, "chromadb_data_dir", "") or ""
-        effective_dir = state_data_dir if state_data_dir else data_dir
+def run_bge(state, data_dir: str = "data") -> object:
+    """
+    Convenience wrapper used by the LangGraph pipeline node N08.
 
-        retriever = BGERetriever(
-            model_name = DEFAULT_MODEL,
-            top_k      = DEFAULT_TOP_K,
-            data_dir   = effective_dir,
-        )
-        return retriever.run(state)
+    Bug #3 fix (S13): if state has chromadb_data_dir (set by chunker),
+    use that to ensure BGE reads the same path the chunker wrote to.
+
+    Args:
+        state    : BAState object
+        data_dir : Default ChromaDB parent dir (overridden by state if present)
+
+    Returns:
+        BAState with retrieval_stage_1 populated
+    """
+    state_data_dir = getattr(state, "chromadb_data_dir", "") or ""
+    effective_dir = state_data_dir if state_data_dir else data_dir
+
+    retriever = BGERetriever(
+        model_name = DEFAULT_MODEL,
+        top_k      = DEFAULT_TOP_K,
+        data_dir   = effective_dir,
+    )
+    return retriever.run(state)
