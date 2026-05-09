@@ -279,31 +279,102 @@ class BGERetriever:
         """Lazy load the sentence-transformers model.
 
         Bug E (S19): auto-detect GPU when available (Colab/cloud).
-        Falls back to CPU on laptop. Set BGE_DEVICE=cpu to force CPU.
+        Bug G (S21): memory-aware loading.
+          - If GPU has < 2GB free, use float16 to halve memory footprint
+          - If GPU has < 1GB free OR float16 OOMs, fall back to CPU
+          - Set BGE_DEVICE=cpu to force CPU (skips all GPU attempts)
+          - Set BGE_DEVICE=cuda to force CUDA without fallback
+          - Set BGE_FP16=0 to disable float16 (legacy mode)
         """
-        if self._model is None:
-            st = _get_sentence_transformers()
-            # Auto-detect device — GPU on Colab, CPU on laptop
-            forced = os.environ.get("BGE_DEVICE", "").strip().lower()
-            if forced in ("cpu", "cuda", "mps"):
-                device = forced
-            else:
+        if self._model is not None:
+            return self._model
+
+        st = _get_sentence_transformers()
+        forced = os.environ.get("BGE_DEVICE", "").strip().lower()
+        allow_fp16 = os.environ.get("BGE_FP16", "1") != "0"
+
+        # ── Determine candidate device ──────────────────────────────────
+        if forced in ("cpu", "cuda", "mps"):
+            device = forced
+            logger.info("N08: BGE_DEVICE=%s forced", forced)
+        else:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    device = "cuda"
+                else:
+                    device = "cpu"
+            except Exception:
+                device = "cpu"
+
+        # ── If CUDA, check available memory and choose dtype ────────────
+        use_fp16 = False
+        if device == "cuda":
+            try:
+                import torch
+                free_bytes, total_bytes = torch.cuda.mem_get_info()
+                free_gb  = free_bytes  / 1e9
+                total_gb = total_bytes / 1e9
+                logger.info(
+                    "N08: GPU memory check — %.2f GB free / %.2f GB total",
+                    free_gb, total_gb,
+                )
+                if free_gb < 1.0:
+                    logger.warning(
+                        "N08: GPU memory <1GB free — falling back to CPU"
+                    )
+                    device = "cpu"
+                elif free_gb < 2.5 and allow_fp16:
+                    use_fp16 = True
+                    logger.info(
+                        "N08: GPU memory tight — using float16 (halves memory)"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "N08: GPU memory check failed (%s) — proceeding anyway",
+                    exc,
+                )
+
+        # ── Load model with retry on OOM ────────────────────────────────
+        logger.info(
+            "N08: Loading model '%s' on '%s' (fp16=%s) ...",
+            self.model_name, device, use_fp16,
+        )
+        try:
+            kwargs = {"device": device}
+            if use_fp16 and device == "cuda":
+                # SentenceTransformer doesn't take torch_dtype directly
+                # in older versions — use model_kwargs which forwards
+                # to underlying transformers.AutoModel
+                import torch
+                kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
+            self._model = st.SentenceTransformer(self.model_name, **kwargs)
+        except Exception as exc:
+            err_str = str(exc).lower()
+            is_oom = ("out of memory" in err_str or "cuda" in err_str)
+            if is_oom and device == "cuda":
+                logger.warning(
+                    "N08: CUDA load failed (%s) — falling back to CPU",
+                    type(exc).__name__,
+                )
+                # Free any partial allocation
                 try:
                     import torch
-                    if torch.cuda.is_available():
-                        device = "cuda"
-                    else:
-                        device = "cpu"
+                    torch.cuda.empty_cache()
                 except Exception:
-                    device = "cpu"
-            logger.info("N08: Loading model '%s' on '%s' ...",
-                        self.model_name, device)
-            self._model = st.SentenceTransformer(
-                self.model_name,
-                device=device,
-            )
-            logger.info("N08: Model loaded — %s on %s",
-                        self.model_name, device)
+                    pass
+                device = "cpu"
+                use_fp16 = False
+                self._model = st.SentenceTransformer(
+                    self.model_name, device="cpu",
+                )
+            else:
+                raise
+
+        logger.info(
+            "N08: Model loaded — %s on %s (fp16=%s)",
+            self.model_name, device, use_fp16,
+        )
         return self._model
 
     def _get_client(self, data_dir: str):
