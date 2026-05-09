@@ -508,7 +508,7 @@ pip install -r requirements.txt
 ### Pull Local Model
 
 ```bash
-ollama pull gemma4:e4b
+ollama pull qwen2.5:3b
 ```
 
 ---
