@@ -18,7 +18,7 @@ SEC filings (10-K, 10-Q, 8-K), earnings transcripts, and financial statements.
 Built to target top performance on the [FinanceBench](https://arxiv.org/abs/2311.11944)
 benchmark while running entirely on a single laptop with no paid APIs.
 
-**Why this exists:** financial document QA is dominated by expensive cloud LLMs that send sensitive filings over the network. This project is a complete open-source framework — 19-node deterministic pipeline, 1287 tests, multi-pod debate architecture — designed to explore how much accuracy is achievable with a small local model. Benchmark numbers are measured honestly and published in `eval/results/latest.md` as they improve.
+**Why this exists:** financial document QA is dominated by expensive cloud LLMs that send sensitive filings over the network. This project is a complete open-source framework — 19-node deterministic pipeline, 1287 tests, multi-pod debate architecture — designed to explore how much accuracy is achievable with a small local model. Benchmark numbers are measured honestly and published in `eval/results/latest.md`(yet to update) as they improve.
 
 ---
 
@@ -33,8 +33,6 @@ benchmark while running entirely on a single laptop with no paid APIs.
 | Memory footprint | ≤14 GB target | ≤14 GB | ✅ Enforced (C4) |
 | Deterministic | seed=42 | seed=42 | ✅ Enforced (C5) |
 | Test coverage | 1287 passing | — | ✅ |
-
-**Latest eval:** see [`eval/results/latest.md`](eval/results/latest.md) for the most recent benchmark numbers, with detailed breakdowns by question type and ablations.
 
 ---
 
