@@ -1,627 +1,277 @@
+
+<div align="center">
+
 # 🚀 FinBench Multi-Agent Business Analyst AI
 
-> **Production-grade AI system for financial document intelligence, forensic analysis, and explainable business analytics.**
+<img src="./finbench-github-banner.png" alt="FinBench Banner" width="100%"/>
+
+</div>
 
 ---
 
-# 📌 Overview
 
-FinBench Multi-Agent Business Analyst AI is a fully local, deterministic, multi-agent AI platform designed to analyze complex financial documents such as:
+<div align="center">
 
-- SEC 10-K filings
-- SEC 10-Q filings
-- 8-K reports
-- Earnings call transcripts
-- Financial statements
-- iXBRL documents
+# 📊 FinBench Multi-Agent Business Analyst AI
 
-The system combines:
+### Intelligent Financial Reasoning. Local Execution. Zero API Cost.
 
-- Multi-agent reasoning
-- Hybrid retrieval architecture
-- Explainable AI
-- Financial forensics
-- Deterministic validation pipelines
-- Business-grade PDF reporting
+> A reproducible, fully local, multi-agent AI system that extracts, validates, debates, and explains financial insights directly from SEC 10-K filings using a 19-node intelligent pipeline architecture.
 
-Unlike cloud-based financial AI systems, this platform operates completely offline using local inference.
+<br>
 
-That means:
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
+![Tests](https://img.shields.io/badge/Tests-128%2B_Passing-brightgreen.svg)
+![Accuracy](https://img.shields.io/badge/Accuracy-84.2%25-brightgreen.svg)
+![Local AI](https://img.shields.io/badge/100%25-Local_AI-purple.svg)
+![Cost](https://img.shields.io/badge/API_Cost-$0-success.svg)
 
-✅ Zero API cost  
-✅ No vendor lock-in  
-✅ No sensitive financial data leakage  
-✅ Fully reproducible outputs  
-✅ Enterprise-style explainability  
+</div>
 
 ---
 
-# 🧠 Core Vision
+# 🌟 Overview
 
-Most financial analysis systems today rely heavily on:
+FinBench AI is a next-generation **multi-agent financial analysis platform** designed to process SEC 10-K filings with high accuracy using local AI infrastructure.
 
-- expensive proprietary APIs
-- black-box reasoning
-- cloud infrastructure
-- hidden prompt engineering
-- non-reproducible outputs
+Unlike traditional RAG systems, this architecture combines:
 
-This project takes the opposite approach.
+- ⚡ Hybrid Retrieval
+- 🧠 Multi-Agent Debate
+- 📈 Financial Reasoning
+- 🔍 Explainability
+- 🛡️ Validation Layers
+- 📄 Structured Financial Grounding
 
-The objective is to build a:
-
-> transparent, explainable, deterministic, locally executable financial analyst AI.
-
-The system is engineered to explore how far small local models can go when combined with:
-
-- advanced retrieval pipelines
-- structured validation
-- multi-agent debate
-- financial forensic analysis
-- deterministic orchestration
+All running completely **offline** on consumer hardware.
 
 ---
 
-# ⚡ Key Highlights
+# 🎯 Core Capability
+
+Ask complex financial questions in natural language:
+
+```text
+"What was Apple's net income in FY2023?"
+```
+
+### ✅ Output
+
+```yaml
+Answer:
+96,995 million
+
+Confidence:
+1.00
+
+Source:
+us-gaap:NetIncomeLoss
+
+Reference:
+[Apple Inc./10-K/FY2023/iXBRL_NUMERIC/24]
+
+Execution Time:
+0.1 seconds
+```
+
+---
+
+# 🧠 Key Features
 
 | Feature | Description |
 |---|---|
-| 🧩 Multi-Agent System | Multiple specialized AI pods collaborate and cross-check outputs |
-| 🏠 100% Local Inference | Runs completely offline using Ollama |
-| 💰 Zero API Cost | No OpenAI or paid API dependency |
-| 📊 Financial Forensics | Benford analysis, anomaly detection, GARCH risk logic |
-| 🔍 Hybrid Retrieval | BM25 + Dense Retrieval + Cross-Encoder reranking |
-| 📑 Explainable Outputs | SHAP graphs + Causal DAG reasoning |
-| 🧪 Deterministic Pipeline | Fixed seed outputs with reproducibility |
-| 🛡 Hallucination Reduction | Blind Auditor and Validator loops |
-| 📄 Automated PDF Reports | Generates professional business analyst reports |
-| ⚙️ Production Architecture | 19-node orchestrated pipeline |
+| 🔥 SniperRAG Retrieval | Direct iXBRL table-cell extraction |
+| 🧩 Hybrid Search | BM25 + Semantic + Reranker |
+| 🤖 Multi-Agent Debate | Analyst vs CFO vs Blind Auditor |
+| 🛡️ Validation Gates | Grounded reasoning validation |
+| 📊 Explainability | SHAP + causal DAG analysis |
+| 💾 100% Local | No cloud APIs required |
+| ⚡ Fast Execution | Average 1.9 sec/query |
+| 📄 Provenance Tracking | Every answer fully cited |
+| 🔁 Graceful Degradation | Never crashes under failures |
+| 🧪 Benchmark Tested | 128+ regression tests |
 
 ---
 
-# 🖼 System Architecture
+# 📈 Benchmark Results — Phase 1 (May 2026)
 
-## High-Level Pipeline
+## 🏆 Overall Accuracy: **84.2%**
 
-```mermaid
-flowchart TD
-    A[Financial Documents] --> B[N01 PDF Ingestor]
-    B --> C[N02 Section Tree Builder]
-    C --> D[N03 Chunker + Indexer]
-
-    D --> E[N04 Query Router]
-    E --> F[N05 Difficulty Predictor]
-
-    F --> G[N06 SniperRAG]
-    F --> H[N07 BM25 Retriever]
-    F --> I[N08 BGE-M3 Retriever]
-
-    G --> J[N09 RRF + Cross Encoder]
-    H --> J
-    I --> J
-
-    J --> K[N10 Prompt Assembler]
-
-    K --> L[N11 Analyst Pod]
-    K --> M[N12 CFO Quant Pod]
-    K --> N[N14 Blind Auditor]
-
-    L --> O[N15 PIV Mediator]
-    M --> O
-    N --> O
-
-    O --> P[N13 TriGuard Forensics]
-    P --> Q[N16 SHAP + DAG]
-    Q --> R[N18 RLEF Evaluation]
-    R --> S[N19 Output Generator]
-```
+### Tested on:
+- 165 numerical financial questions
+- 7 major SEC 10-K filings
+- Real-world financial extraction tasks
 
 ---
 
-# 🏗 19-Node Deterministic Architecture
+## 📊 Company-wise Performance
 
-## 📥 Ingestion Layer
+| Company | Filing | Accuracy | Notes |
+|---|---|---|---|
+| 🍎 Apple Inc. | FY2023 | **100.0%** (24/24) | Perfect iXBRL extraction |
+| 🟢 Nvidia | FY2024 | 91.3% | Strong structured tables |
+| 🛒 Amazon | FY2023 | 87.0% | High retrieval quality |
+| 🔵 Alphabet | FY2023 | 83.3% | Complex reporting structures |
+| 📘 Meta Platforms | FY2023 | 79.2% | Missing inventory sections |
+| 🪟 Microsoft | FY2023 | 75.0% | Multi-period ambiguity |
+| 🚗 Tesla | FY2023 | 73.9% | Smaller iXBRL footprint |
 
-### N01 — PDF Ingestor
-Handles:
+---
 
-- PDF extraction
-- OCR processing
-- scanned documents
-- image-based tables
-- text normalization
-
-### N02 — Section Tree Builder
-Creates structured hierarchy:
-
-- headings
-- subsections
-- financial sections
-- semantic grouping
-
-### N03 — Chunker + Indexer
-Builds optimized retrieval chunks with metadata tagging:
+# 🏗️ Complete System Architecture
 
 ```text
-COMPANY / DOC_TYPE / FY / SECTION / PAGE
+INGESTION → ROUTING → HYBRID RETRIEVAL → MULTI-AGENT DEBATE → EXPLAINABILITY → OUTPUT
 ```
 
 ---
 
-## 🧭 Routing Layer
+# 🔥 Architectural Innovations
 
-### N04 — CART Router
-Classifies user query type into categories such as:
+## 1️⃣ Sniper-First Retrieval Strategy
 
-- financial metrics
-- risk analysis
-- accounting questions
-- growth analysis
-- forensic detection
+Traditional RAG systems waste compute.
 
-### N05 — Logistic Regression Difficulty Predictor
-Predicts:
-
-- complexity
-- retrieval depth
-- reasoning requirements
-- compute path
+FinBench uses **SniperRAG** first:
+- ⚡ 0.1–0.3 sec response
+- 🎯 High numerical precision
+- 💰 Zero API dependency
+- 🧠 Minimal hallucination
 
 ---
 
-## 🔎 Retrieval Layer
+## 2️⃣ Multi-Agent Debate System
 
-### N06 — SniperRAG
-Ultra-fast regex/direct-hit retrieval.
-
-Best for:
-
-- exact figures
-- percentages
-- line-item extraction
-- fiscal references
-
-Latency:
-
-```text
-< 50 ms
-```
-
----
-
-### N07 — BM25 Sparse Retrieval
-Traditional keyword-based retrieval.
-
-Strengths:
-
-- accounting terminology
-- exact wording
-- financial statement matching
-
----
-
-### N08 — BGE-M3 Dense Retrieval
-Semantic embedding retrieval.
-
-Strengths:
-
-- contextual understanding
-- paraphrased financial questions
-- semantic matching
-
----
-
-### N09 — RRF + Cross Encoder
-Combines all retrieval outputs using:
-
-- Reciprocal Rank Fusion
-- Cross-Encoder reranking
-- confidence optimization
-
----
-
-# 🤖 Multi-Agent Intelligence System
-
-## N11 — Analyst Pod
-Primary business analysis engine.
-
-Responsibilities:
-
-- interpret filings
-- answer financial questions
-- summarize trends
-- provide contextual explanations
-
-Uses:
-
-```text
-PIV Loop:
-Planner → Implementor → Validator
-```
-
----
-
-## N12 — CFO / Quant Pod
-Focused on:
-
-- formulas
-- quantitative logic
-- ratio analysis
-- earnings validation
-- forecasting logic
-
----
-
-## N14 — Blind Auditor
-Independent verification agent.
-
-Critical feature:
-
-> The Blind Auditor never sees the outputs of the other agents.
-
-This dramatically reduces:
-
-- hallucinations
-- self-confirmation bias
-- cascading reasoning errors
-
----
-
-## N15 — PIV Mediator
-Acts as the final decision layer.
-
-Responsibilities:
-
-- compare pod outputs
-- resolve conflicts
-- perform majority validation
-- trigger mediation retries
-
----
-
-# 🛡 Financial Forensics Engine
-
-## N13 — TriGuard Forensics
-Advanced fraud and anomaly detection system.
-
-Includes:
-
-### 📈 Benford Analysis
-Detects suspicious numerical distributions.
-
-### 🌲 Isolation Forest
-Finds outliers and anomalies.
-
-### 📉 GARCH Modeling
-Analyzes volatility and risk behavior.
-
----
-
-# 📊 Explainable AI Layer
-
-## N16 — SHAP Explainability
-Shows:
-
-- feature importance
-- retrieval influence
-- reasoning transparency
-
----
-
-## N16 — Causal DAG Engine
-Builds dependency relationships such as:
-
-```text
-Revenue → Operating Income → EPS → Valuation
-```
-
-This helps explain:
-
-- why predictions occurred
-- which variables influenced outcomes
-- financial dependency chains
-
----
-
-# 🧪 RLEF Evaluation Engine
-
-## N18 — Reinforcement Learning Evaluation Framework
-Every output is graded automatically.
-
-Checks include:
-
-- factual grounding
-- citation quality
-- financial consistency
-- completeness
-- reasoning validity
-- confidence alignment
-
-This creates a self-improving evaluation loop.
-
----
-
-# 📄 Professional PDF Report System
-
-Each query produces a detailed 14-page business analyst report.
-
-## Included Sections
-
-| Page | Content |
+| Agent | Role |
 |---|---|
-| 1 | Executive Cover |
-| 2 | Financial Summary Dashboard |
-| 3 | Final Answer Card |
-| 4 | Step-by-Step Reasoning |
-| 5 | Retrieval Evidence |
-| 6 | Multi-Agent Comparison |
-| 7 | Financial Forensics |
-| 8 | SHAP Explainability |
-| 9 | Causal DAG |
-| 10 | Extracted Charts |
-| 11 | Methodology |
-| 12 | Citation Appendix |
-| 13 | Validator Audit Trail |
-| 14 | Reproducibility Details |
+| 🧠 Analyst Pod | Financial reasoning |
+| 💼 CFO/Quant Pod | Numerical validation |
+| 🕵️ Blind Auditor | Detects hallucinations/groupthink |
 
 ---
 
-# 📸 Example Report Visuals
+# 🚀 Quick Start
 
-## Executive Dashboard
-
-![Executive Dashboard](https://placehold.co/1200x600/png?text=Executive+Financial+Dashboard)
-
----
-
-## Retrieval Pipeline Visualization
-
-![Retrieval Pipeline](https://placehold.co/1200x600/png?text=Hybrid+Retrieval+Architecture)
-
----
-
-## Multi-Agent Consensus Engine
-
-![Multi Agent System](https://placehold.co/1200x600/png?text=Multi-Agent+Consensus+System)
-
----
-
-## Financial Forensics Analysis
-
-![Forensics Engine](https://placehold.co/1200x600/png?text=Financial+Forensics+Analysis)
-
----
-
-# ⚙️ Technology Stack
-
-| Component | Technology |
-|---|---|
-| LLM Engine | qwen2.5:3b / Gemma4:e4b |
-| Local Serving | Ollama |
-| Vector Store | ChromaDB |
-| Dense Embeddings | BAAI/bge-m3 |
-| Sparse Retrieval | BM25 |
-| Orchestration | LangGraph |
-| ML Routing | Scikit-Learn |
-| Explainability | SHAP |
-| UI | Streamlit |
-| PDF Reports | ReportLab |
-| Data Science | NumPy + Pandas |
-
----
-
-# 📈 Current Performance
-
-## Latest Internal Smoke Test
-
-| Metric | Result |
-|---|---|
-| Apple FY2023 Questions | 5/5 Correct |
-| Average Confidence | 0.980 |
-| Query Speed | ~0.8 sec |
-| Local Inference | 100% |
-| API Cost | $0 |
-
----
-
-# 🧠 Why This Architecture Matters
-
-Most RAG systems stop at:
-
-```text
-Retriever → LLM → Output
-```
-
-This project goes far beyond that.
-
-The architecture introduces:
-
-- multi-agent debate
-- blind auditing
-- forensic validation
-- deterministic orchestration
-- structured reasoning
-- explainability systems
-- retrieval confidence fusion
-- grading and feedback loops
-
-This transforms the system from:
-
-```text
-Simple chatbot
-```
-
-into:
-
-```text
-Business Analyst AI Platform
-```
-
----
-
-# 🔐 Engineering Constraints
-
-These are hard-enforced architectural rules.
-
-| Constraint | Enforcement |
-|---|---|
-| Zero API Cost | No paid API packages allowed |
-| Local-Only Inference | No cloud dependency |
-| Deterministic Outputs | seed=42 enforced globally |
-| Memory Cap | ≤14GB RAM |
-| Validation First | Every response audited |
-| Context Before Question | Mandatory prompt structure |
-| Citation Enforcement | Metadata prefixing required |
-
----
-
-# 🧰 Installation Guide
-
-## Prerequisites
-
-- Python 3.11+
-- Ollama installed locally
-- 14 GB RAM
-- Optional GPU acceleration
-
----
-
-## Installation
-
-### Clone Repository
+## 📦 Installation
 
 ```bash
-git clone <repository>
-cd finbench_agent
-```
+git clone https://github.com/vickyPotheesh2004/finbench_agent-Multi_Agent_Business_Analyst_System.git
 
----
+cd finbench_agent-Multi_Agent_Business_Analyst_System
 
-### Install Dependencies
+python -m venv venv
 
-```bash
+source venv/bin/activate
+# Windows:
+# venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
 ---
 
-### Pull Local Model
+## 🧠 Install Local LLM (Optional)
 
 ```bash
+curl -fsSL https://ollama.com/install.sh | sh
+
 ollama pull qwen2.5:3b
 ```
 
 ---
 
-### Run Application
+## ▶️ Run Example
 
-```bash
-streamlit run app.py
+```python
+from src.pipeline.pipeline import FinBenchPipeline
+
+pipeline = FinBenchPipeline()
+
+state = pipeline.ingest(
+    "documents/sec_filings/AAPL_FY2023_10-K.html",
+    company_name="Apple Inc.",
+    doc_type="10-K",
+    fiscal_year="FY2023"
+)
+
+state = pipeline.query(
+    state,
+    "What was Apple revenue in FY2023?"
+)
+
+print(state.final_answer)
 ```
 
 ---
 
-# 📂 Project Structure
+# 🧪 Technology Stack
 
-```text
-finbench_agent/
-│
-├── src/
-│   ├── ingestion/
-│   ├── retrieval/
-│   ├── agents/
-│   ├── explainability/
-│   ├── forensics/
-│   ├── output/
-│   ├── pipeline/
-│   └── utils/
-│
-├── tests/
-├── eval/
-├── outputs/
-├── app.py
-├── requirements.txt
-└── README.md
-```
-
----
-
-# 🛣 Roadmap
-
-| Phase | Status |
+| Category | Technology |
 |---|---|
-| Retrieval Engine | ✅ Complete |
-| Multi-Agent Pods | ✅ Complete |
-| PDF Reporting | ✅ Complete |
-| Real-Time Data Feeds | ✅ Complete |
-| FinanceBench Evaluation | 🔬 In Progress |
-| QLoRA Fine-Tuning | 📅 Planned |
-| DPO Optimization | 📅 Planned |
-| Ollama Hub Release | 📅 Planned |
+| Language | Python 3.11 |
+| Orchestration | LangGraph |
+| Vector DB | ChromaDB |
+| Semantic Retrieval | BGE-M3 |
+| Sparse Retrieval | BM25 |
+| LLM Runtime | Ollama |
+| Models | Qwen2.5, Llama 3.1 |
+| ML | XGBoost, sklearn |
+| Explainability | SHAP |
+| Graph Analysis | networkx |
+| Visualization | matplotlib, plotly |
+| Export | python-docx |
+| Database | SQLite |
+| Testing | pytest |
 
 ---
 
-# 🎯 Potential Real-World Use Cases
+# 📍 Future Roadmap
 
-## Enterprise Finance Teams
-
-- SEC analysis
-- earnings analysis
-- risk assessment
-- investment research
-
-## Hedge Funds
-
-- anomaly detection
-- market intelligence
-- filing comparison
-- signal extraction
-
-## Researchers
-
-- explainable finance AI
-- RAG experimentation
-- deterministic agent systems
-- financial NLP research
-
-## Students & Developers
-
-- multi-agent system learning
-- LangGraph orchestration
-- financial AI experimentation
-- local LLM architecture
+| Phase | Objective | Target |
+|---|---|---|
+| Phase 2 | Fix wrong-cell selection | 92–95% |
+| Phase 3 | Official FinanceBench evaluation | Benchmark parity |
+| Phase 4 | SFT + DPO fine-tuning | Higher reasoning |
+| Phase 5 | Power BI & Tableau integration | Visual analytics |
+| Phase 6 | Live RLEF self-improvement loop | Continual learning |
 
 ---
 
-# 🏁 Final Summary
+# 📜 License
 
-FinBench Multi-Agent Business Analyst AI is not just another RAG chatbot.
-
-It is a:
-
-- deterministic AI analyst
-- explainable financial intelligence engine
-- multi-agent reasoning framework
-- forensic validation system
-- reproducible research platform
-
-built entirely around:
-
-```text
-Local AI + Financial Reasoning + Explainability + Determinism
-```
+MIT License
 
 ---
 
-# 📚 Acknowledgements
+# 🙏 Acknowledgments
 
-- Ollama
-- LangGraph
+Inspired by:
 - FinanceBench
-- BAAI/bge-m3
-- ReportLab
-- Streamlit
-- Claude AI
-- Google Colab
-- Open-source AI community
-- FinanceBench benchmark
+- FinQA
+- Patronus AI
+- Qwen
+- Llama
+- BGE-M3 community
+
+---
+
+# 👨‍💻 Author
+
+## Potheesh Vignesh K
+
+- GitHub: github.com/vickyPotheesh2004
+- LinkedIn: linkedin.com/in/vickypotheesh
+
+---
+
+<div align="center">
+
+# ⭐ FinBench AI
+
+### Local Financial Intelligence Meets Multi-Agent Reasoning
+
+*"The future of financial analysis is not just AI.  
+It is grounded, explainable, reproducible AI."*
+
+</div>
