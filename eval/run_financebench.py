@@ -43,7 +43,13 @@ FB_QUESTIONS = FB_ROOT / "data" / "financebench_open_source.jsonl"
 FB_METADATA  = FB_ROOT / "data" / "financebench_document_information.jsonl"
 FB_PDFS_DIR  = FB_ROOT / "pdfs"
 
-RESULTS_DIR = ROOT / "eval" / "results"
+# Auto-detect: if Google Drive is mounted (Colab), save there for persistence
+# Otherwise save to local eval/results
+import os as _os
+if _os.path.exists("/content/drive/MyDrive"):
+    RESULTS_DIR = Path("/content/drive/MyDrive/finbench_results")
+else:
+    RESULTS_DIR = ROOT / "eval" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
