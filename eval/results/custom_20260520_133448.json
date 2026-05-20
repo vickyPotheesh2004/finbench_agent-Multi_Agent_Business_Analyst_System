@@ -1,0 +1,72 @@
+[
+  {
+    "qid": "GOOGL-001",
+    "company": "Alphabet",
+    "question": "What was Alphabet's total revenue in FY2023?",
+    "gold": "307394",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "307,394 million [Alphabet Inc./10-K/FY2023/iXBRL_NUMERIC/37]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.3
+  },
+  {
+    "qid": "GOOGL-002",
+    "company": "Alphabet",
+    "question": "What was Alphabet's net income in FY2023?",
+    "gold": "73795",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "73,795 million [Alphabet Inc./10-K/FY2023/iXBRL_NUMERIC/37]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  },
+  {
+    "qid": "GOOGL-003",
+    "company": "Alphabet",
+    "question": "What was Alphabet's operating income in FY2023?",
+    "gold": "84293",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "84,293 million [Alphabet Inc./10-K/FY2023/iXBRL_NUMERIC/37]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  },
+  {
+    "qid": "GOOGL-004",
+    "company": "Alphabet",
+    "question": "What was Alphabet's gross profit in FY2023?",
+    "gold": "174067",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "[RETRIEVAL_MISS \u2014 context insufficient after retry]",
+    "winning_pod": "SniperRAG",
+    "correct": false,
+    "match_type": "retrieval_miss",
+    "elapsed_sec": 43.4
+  },
+  {
+    "qid": "GOOGL-005",
+    "company": "Alphabet",
+    "question": "What were Alphabet's research and development expenses in FY2023?",
+    "gold": "45427",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "45,427 million [Alphabet Inc./10-K/FY2023/iXBRL_NUMERIC/40]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  }
+]

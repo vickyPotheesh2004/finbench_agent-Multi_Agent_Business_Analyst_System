@@ -1,0 +1,61 @@
+{
+  "dataset_name": "sample",
+  "total": 3,
+  "correct": 0,
+  "numeric_correct": 0,
+  "errors": 0,
+  "accuracy": 0.0,
+  "numeric_accuracy": 0.0,
+  "mean_confidence": 0.0,
+  "mean_latency": 19.88,
+  "p50_latency": 1.008,
+  "p95_latency": 1.008,
+  "sniper_hit_rate": 0.0,
+  "seed": 42,
+  "model_version": "gemma4:e4b",
+  "timestamp": "2026-04-23T23:52:04",
+  "per_question": [
+    {
+      "question_id": "sample_01",
+      "question": "What was Apple's total net sales for fiscal year 2023?",
+      "expected": "$383,285 million",
+      "predicted": "[Analysis could not be completed \u2014 RETRIEVAL_MISS]",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 57.647,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": ""
+    },
+    {
+      "question_id": "sample_02",
+      "question": "What was net income for the most recent fiscal year?",
+      "expected": "$96,995 million",
+      "predicted": "[Analysis could not be completed \u2014 RETRIEVAL_MISS]",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 1.008,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": ""
+    },
+    {
+      "question_id": "sample_03",
+      "question": "What was diluted EPS for fiscal year 2023?",
+      "expected": "$6.13",
+      "predicted": "[Analysis could not be completed \u2014 RETRIEVAL_MISS]",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 0.986,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": ""
+    }
+  ]
+}

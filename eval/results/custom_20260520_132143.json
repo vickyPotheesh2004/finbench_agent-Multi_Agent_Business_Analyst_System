@@ -1,0 +1,72 @@
+[
+  {
+    "qid": "AAPL-001",
+    "company": "Apple Inc.",
+    "question": "What was Apple's total net sales in FY2023?",
+    "gold": "383285",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "383,285 million [Apple Inc./10-K/FY2023/iXBRL_NUMERIC/24]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.3
+  },
+  {
+    "qid": "AAPL-002",
+    "company": "Apple Inc.",
+    "question": "What was Apple's net income in FY2023?",
+    "gold": "96995",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "96,995 million [Apple Inc./10-K/FY2023/iXBRL_NUMERIC/28]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  },
+  {
+    "qid": "AAPL-003",
+    "company": "Apple Inc.",
+    "question": "What was Apple's gross profit in FY2023?",
+    "gold": "169148",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "169,148 million [Apple Inc./10-K/FY2023/iXBRL_NUMERIC/25]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  },
+  {
+    "qid": "AAPL-004",
+    "company": "Apple Inc.",
+    "question": "What was Apple's operating income in FY2023?",
+    "gold": "114301",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "easy",
+    "predicted": "114,301 million [Apple Inc./10-K/FY2023/iXBRL_NUMERIC/28]",
+    "winning_pod": "SniperRAG",
+    "correct": true,
+    "match_type": "numeric",
+    "elapsed_sec": 0.1
+  },
+  {
+    "qid": "AAPL-005",
+    "company": "Apple Inc.",
+    "question": "What was Apple's total operating expenses in FY2023?",
+    "gold": "54847",
+    "unit": "million",
+    "category": "numerical",
+    "difficulty": "medium",
+    "predicted": "[RETRIEVAL_MISS \u2014 context insufficient after retry]",
+    "winning_pod": "SniperRAG",
+    "correct": false,
+    "match_type": "wrong",
+    "elapsed_sec": 51.9
+  }
+]

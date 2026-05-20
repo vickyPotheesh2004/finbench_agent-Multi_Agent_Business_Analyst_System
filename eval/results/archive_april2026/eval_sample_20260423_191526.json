@@ -1,0 +1,61 @@
+{
+  "dataset_name": "sample",
+  "total": 3,
+  "correct": 0,
+  "numeric_correct": 0,
+  "errors": 3,
+  "accuracy": 0.0,
+  "numeric_accuracy": 0.0,
+  "mean_confidence": 0.0,
+  "mean_latency": 0.413,
+  "p50_latency": 0.016,
+  "p95_latency": 0.016,
+  "sniper_hit_rate": 0.0,
+  "seed": 42,
+  "model_version": "gemma4:e4b",
+  "timestamp": "2026-04-23T19:15:25",
+  "per_question": [
+    {
+      "question_id": "sample_01",
+      "question": "What was Apple's total net sales for fiscal year 2023?",
+      "expected": "$383,285 million",
+      "predicted": "",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 1.222,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": "cannot import name 'PIVLoop' from 'src.analysis.piv_loop' (D:\\projects\\finbench_agent\\src\\analysis\\piv_loop.py)"
+    },
+    {
+      "question_id": "sample_02",
+      "question": "What was net income for the most recent fiscal year?",
+      "expected": "$96,995 million",
+      "predicted": "",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 0.0,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": "cannot import name 'PIVLoop' from 'src.analysis.piv_loop' (D:\\projects\\finbench_agent\\src\\analysis\\piv_loop.py)"
+    },
+    {
+      "question_id": "sample_03",
+      "question": "What was diluted EPS for fiscal year 2023?",
+      "expected": "$6.13",
+      "predicted": "",
+      "exact_match": false,
+      "numeric_match": false,
+      "any_match": false,
+      "confidence": 0.0,
+      "latency_sec": 0.016,
+      "winning_pod": "",
+      "sniper_hit": false,
+      "error": "cannot import name 'PIVLoop' from 'src.analysis.piv_loop' (D:\\projects\\finbench_agent\\src\\analysis\\piv_loop.py)"
+    }
+  ]
+}

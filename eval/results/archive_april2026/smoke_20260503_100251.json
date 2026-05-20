@@ -1,0 +1,71 @@
+{
+  "doc": "documents/sec_filings/AAPL_FY2023_10-K.html",
+  "ingest_sec": 328.1,
+  "pipeline_total": 3747.4,
+  "n_total": 5,
+  "n_ok": 5,
+  "n_with_answer": 5,
+  "n_sniper": 0,
+  "results": [
+    {
+      "id": "smoke_01",
+      "question": "What was Apple's total net sales for fiscal year 2023?",
+      "expected": "$383,285 million",
+      "answer": "The retrieved context does not contain the specific information about Apple's total net sales for fiscal year 2023. Therefore, no consensus could be reached among the candidate pods.",
+      "confidence": 0.0,
+      "elapsed_sec": 1025.3,
+      "error": "",
+      "sniper_hit": false,
+      "chunks_retrieved": 3,
+      "winning_pod": ""
+    },
+    {
+      "id": "smoke_02",
+      "question": "What was Apple's net income for fiscal year 2023?",
+      "expected": "$96,995 million",
+      "answer": "The provided context does not contain the specific information about Apple's net income for fiscal year 2023. Therefore, no consensus can be reached among the candidates.",
+      "confidence": 0.0,
+      "elapsed_sec": 741.1,
+      "error": "",
+      "sniper_hit": false,
+      "chunks_retrieved": 3,
+      "winning_pod": ""
+    },
+    {
+      "id": "smoke_03",
+      "question": "What was Apple's diluted earnings per share for fiscal 2023?",
+      "expected": "$6.13",
+      "answer": "The provided context does not contain the specific information about Apple's diluted earnings per share for fiscal 2023.",
+      "confidence": 0.0,
+      "elapsed_sec": 704.9,
+      "error": "",
+      "sniper_hit": false,
+      "chunks_retrieved": 3,
+      "winning_pod": ""
+    },
+    {
+      "id": "smoke_04",
+      "question": "What was Apple's gross margin for fiscal year 2023?",
+      "expected": "$169,148 million",
+      "answer": "The provided context does not contain any information about Apple's gross margin for fiscal year 2023.",
+      "confidence": 0.0,
+      "elapsed_sec": 633.0,
+      "error": "",
+      "sniper_hit": false,
+      "chunks_retrieved": 3,
+      "winning_pod": ""
+    },
+    {
+      "id": "smoke_05",
+      "question": "What were Apple's total assets at fiscal year-end 2023?",
+      "expected": "$352,583 million",
+      "answer": "The provided context does not contain the specific information about Apple's total assets at fiscal year-end 2023. Therefore, no consensus can be reached among the candidates.",
+      "confidence": 0.0,
+      "elapsed_sec": 643.1,
+      "error": "",
+      "sniper_hit": false,
+      "chunks_retrieved": 3,
+      "winning_pod": ""
+    }
+  ]
+}

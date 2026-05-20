@@ -132,8 +132,22 @@ class Chunker:
             fiscal_year  = fiscal_year,
         )
 
-        collection_name = f"doc-{session_id[:16]}"
-        bm25_path       = os.path.join(self.bm25_dir, session_id[:16])
+        # Bug B1 fix (2026-05-20): ChromaDB requires collection names to
+        # start AND end with alphanumeric chars. Truncating session_id can
+        # leave trailing dashes/underscores. Sanitize the truncated id.
+        def _sanitize_for_chroma(s: str, max_len: int = 16) -> str:
+            """Truncate to max_len and trim trailing non-alphanumeric chars."""
+            truncated = s[:max_len]
+            # Strip trailing _ - . chars
+            truncated = re.sub(r"[^A-Za-z0-9]+$", "", truncated)
+            # Strip leading non-alphanumeric chars
+            truncated = re.sub(r"^[^A-Za-z0-9]+", "", truncated)
+            # Must be at least 3 chars for ChromaDB
+            return truncated if len(truncated) >= 3 else (truncated + "xxx")[:max_len]
+
+        safe_session = _sanitize_for_chroma(session_id)
+        collection_name = f"doc-{safe_session}"
+        bm25_path       = os.path.join(self.bm25_dir, safe_session)
 
         self._build_bm25_index(chunks, bm25_path)
         self._build_chromadb_index(chunks, collection_name)
