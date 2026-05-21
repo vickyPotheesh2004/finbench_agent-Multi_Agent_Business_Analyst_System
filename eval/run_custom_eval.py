@@ -315,6 +315,26 @@ def run_eval(args) -> list:
         print(f" [{c_idx}/{len(by_company)}] {company} — {doc_file} ({len(q_list)} Q)")
         print("=" * 80)
 
+        # ── Re-warm Ollama + reset circuit breaker between companies ──
+        try:
+            from src.utils.llm_client import reset_circuit_breaker
+            reset_circuit_breaker()
+            # Re-warm: keep model loaded during slow BGE ingest
+            import urllib.request
+            warmup = json.dumps({
+                "model": "qwen2.5:3b", "messages": [{"role": "user", "content": "ok"}],
+                "stream": False, "keep_alive": "30m",
+                "options": {"num_predict": 1},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:11434/api/chat",
+                data=warmup, headers={"Content-Type": "application/json"}, method="POST",
+            )
+            urllib.request.urlopen(req, timeout=120)
+            print(f"   🔄 LLM circuit reset + model re-warmed")
+        except Exception as exc:
+            print(f"   ⚠️  LLM re-warm failed: {exc}")
+
         # ── Ingest once per company ──
         t0 = time.time()
         try:

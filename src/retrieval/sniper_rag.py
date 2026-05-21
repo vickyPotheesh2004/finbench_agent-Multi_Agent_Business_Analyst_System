@@ -75,13 +75,21 @@ RAW_PATTERNS: Dict[str, str] = {
     "dividends_paid":      r"dividends?\s+paid|cash\s+dividends?",
     "capex":               r"capital\s+expenditures?|capex|purchases?\s+of\s+property",
     "interest_expense":    r"interest\s+(?:expense|cost|charges?)|finance\s+(?:cost|charge)",
-    "income_tax":          r"(?:provision\s+for\s+)?income\s+tax(?:es)?|tax\s+(?:expense|provision)",
+    "income_before_tax":   r"income\s+(?:loss\s+)?(?:from\s+continuing\s+operations\s+)?before\s+(?:income\s+)?tax(?:es)?|pre[\s-]?tax\s+income",
     "operating_income":    r"(?:(?:total\s+)?operating\s+(?:income|loss|profit))|(?:income\s+(?:loss\s+)?from\s+operations)",
-    "gross_profit":        r"gross\s+(?:profit|margin|income)",
+    "gross_margin":        r"gross\s+(?:profit\s+)?margin(?:\s+percentage)?|gross\s+margin\s+%|gross\s+profit\s+as\s+(?:a\s+)?percent",
+    "operating_margin":    r"operating\s+(?:income\s+)?margin(?:\s+percentage)?|operating\s+margin\s+%",
+    "net_margin":          r"net\s+(?:income\s+)?margin|net\s+profit\s+margin|profit\s+margin(?:\s+percentage)?",
+    "gross_profit":        r"gross\s+(?:profit|income)(?!\s+margin)(?!\s+as\s+percent)",
+    "effective_tax_rate":  r"effective\s+(?:income\s+)?tax\s+rate|tax\s+rate",
+    "return_on_equity":    r"return\s+on\s+equity|(?<!current\s)\broe\b",
+    "return_on_assets":    r"return\s+on\s+(?:total\s+)?assets|\broa\b",
+    "debt_to_equity":      r"debt[\s-]+to[\s-]+equity(?:\s+ratio)?|d/?e\s+ratio|leverage\s+ratio",
+    "current_ratio":       r"current\s+ratio",
     "ebitda":              r"(?:adjusted\s+)?ebitda|earnings\s+before\s+interest[,\s]+(?:taxes[,\s]+)?depreciation",
     "ebit":                r"\bebit\b|earnings\s+before\s+interest\s+and\s+taxes",
-    "eps_diluted":         r"(?:diluted\s+)?(?:earnings|loss)\s+per\s+(?:diluted\s+)?(?:common\s+)?share|diluted\s+eps|eps\s+diluted",
-    "eps_basic":           r"basic\s+(?:earnings|loss)\s+per\s+(?:common\s+)?share|basic\s+eps",
+    "eps_basic":           r"basic\s+(?:earnings|loss)\s+per\s+(?:common\s+)?share|basic\s+eps|eps\s+basic",
+    "eps_diluted":         r"diluted\s+(?:earnings|loss)\s+per\s+(?:diluted\s+)?(?:common\s+)?share|(?:earnings|loss)\s+per\s+(?:diluted\s+)?(?:common\s+)?share|diluted\s+eps|eps\s+diluted|(?<!basic\s)(?:earnings|loss)\s+per\s+share",
     "r_and_d":             r"research\s+(?:and|&)\s+development(?:\s+(?:expense|cost))?",
     "sg_and_a":            r"(?:selling[,\s]+)?general\s+(?:and\s+)?administrative(?:\s+(?:expense|cost))?|sg(?:\s*[&and]+\s*)?a",
     "cogs":                r"cost\s+of\s+(?:goods?\s+)?(?:revenue|sales?|products?|services?)|cost\s+of\s+revenues?",
@@ -106,6 +114,8 @@ COMPILED_PATTERNS: Dict[str, re.Pattern] = {
 
 # ── Pattern → canonical iXBRL tags ────────────────────────────────────────────
 _PATTERN_TO_IXBRL_TAGS: Dict[str, List[str]] = {
+    "income_before_tax":   ["us-gaap:incomelossfromcontinuingoperationsbeforeincometaxes",
+                            "us-gaap:incomelossfromcontinuingoperationsbeforeincometaxesextraordinaryitemsnoncontrollinginterest"],
     "revenue":             ["us-gaap:revenues", "us-gaap:salesrevenuenet",
                             "us-gaap:revenuefromcontractwithcustomerexcludingassessedtax"],
     "cogs":                ["us-gaap:costofrevenue", "us-gaap:costofgoodssold",
@@ -187,12 +197,77 @@ def _compute_free_cash_flow(deps: Dict[str, "SniperResult"]) -> Optional[float]:
         return float(ocf.cell.numeric_value) - abs(float(capex.cell.numeric_value))
     return None
 
+def _compute_ratio(deps: Dict[str, "SniperResult"], num_key: str, den_key: str) -> Optional[float]:
+    """Generic ratio: (numerator / denominator) * 100 → percentage."""
+    num = deps.get(num_key)
+    den = deps.get(den_key)
+    if (num and num.cell and num.cell.numeric_value is not None and
+        den and den.cell and den.cell.numeric_value is not None):
+        denominator = float(den.cell.numeric_value)
+        if abs(denominator) < 1e-9:
+            return None
+        return round(float(num.cell.numeric_value) / denominator * 100, 1)
+    return None
+
+
+def _compute_plain_ratio(deps: Dict[str, "SniperResult"], num_key: str, den_key: str) -> Optional[float]:
+    """Plain ratio (not percentage): numerator / denominator → x times."""
+    num = deps.get(num_key)
+    den = deps.get(den_key)
+    if (num and num.cell and num.cell.numeric_value is not None and
+        den and den.cell and den.cell.numeric_value is not None):
+        denominator = float(den.cell.numeric_value)
+        if abs(denominator) < 1e-9:
+            return None
+        return round(float(num.cell.numeric_value) / denominator, 2)
+    return None
+
 
 _SYNTHETIC_METRICS: Dict[str, Tuple[str, List[str], Callable]] = {
     "free_cash_flow": (
         "OCF - CapEx",
         ["operating_cash_flow", "capex"],
         _compute_free_cash_flow,
+    ),
+    "gross_margin": (
+        "Gross Profit / Revenue × 100",
+        ["gross_profit", "revenue"],
+        lambda deps: _compute_ratio(deps, "gross_profit", "revenue"),
+    ),
+    "operating_margin": (
+        "Operating Income / Revenue × 100",
+        ["operating_income", "revenue"],
+        lambda deps: _compute_ratio(deps, "operating_income", "revenue"),
+    ),
+    "net_margin": (
+        "Net Income / Revenue × 100",
+        ["net_income", "revenue"],
+        lambda deps: _compute_ratio(deps, "net_income", "revenue"),
+    ),
+    "effective_tax_rate": (
+        "Income Tax / Income Before Tax × 100",
+        ["income_tax", "income_before_tax"],
+        lambda deps: _compute_ratio(deps, "income_tax", "income_before_tax"),
+    ),
+    "return_on_equity": (
+        "Net Income / Stockholders Equity × 100",
+        ["net_income", "shareholders_equity"],
+        lambda deps: _compute_ratio(deps, "net_income", "shareholders_equity"),
+    ),
+    "return_on_assets": (
+        "Net Income / Total Assets × 100",
+        ["net_income", "total_assets"],
+        lambda deps: _compute_ratio(deps, "net_income", "total_assets"),
+    ),
+    "debt_to_equity": (
+        "Total Liabilities / Stockholders Equity",
+        ["total_liabilities", "shareholders_equity"],
+        lambda deps: _compute_plain_ratio(deps, "total_liabilities", "shareholders_equity"),
+    ),
+    "current_ratio": (
+        "Current Assets / Current Liabilities",
+        ["current_assets", "current_liabilities"],
+        lambda deps: _compute_plain_ratio(deps, "current_assets", "current_liabilities"),
     ),
 }
 
@@ -281,6 +356,10 @@ def _humanize_ixbrl(name: str) -> str:
 
 # ── Pattern preferences ──────────────────────────────────────────────────────
 _PATTERN_PREFERENCES: Dict[str, Dict[str, List[str]]] = {
+        "income_before_tax": {
+        "prefer": ["incomelossfromcontinuingoperationsbeforeincometaxes"],
+        "avoid":  ["incometaxexpensebenefit"],
+    },
     "revenue": {
         "prefer": ["us-gaap:revenues", "us-gaap:salesrevenuenet",
                    "us-gaap:revenuefromcontractwithcustomerexcludingassessedtax"],
@@ -784,7 +863,19 @@ class SniperRAG:
         if anchor_cell is None:
             return self._miss("No anchor cell for synthetic")
 
-        formatted_value = f"{computed_value:,.0f}"
+        # Detect if this is a ratio/percentage metric
+        is_ratio = pattern_name in (
+            "gross_margin", "operating_margin", "net_margin",
+            "effective_tax_rate", "return_on_equity", "return_on_assets",
+        )
+        is_plain_ratio = pattern_name in ("debt_to_equity", "current_ratio")
+        
+        if is_ratio:
+            formatted_value = f"{computed_value:.1f}%"
+        elif is_plain_ratio:
+            formatted_value = f"{computed_value:.2f}x"
+        else:
+            formatted_value = f"{computed_value:,.0f}"
         synthetic_cell = TableCell(
             row_header=f"computed:{pattern_name}",
             col_header=anchor_cell.col_header,
@@ -806,10 +897,14 @@ class SniperRAG:
             "USDperShare": "per share",
             "shares":     "shares",
         }
-        unit_raw = anchor_cell.unit or ""
-        unit_friendly = _UNIT_DISPLAY_SYN.get(unit_raw, unit_raw)
-        unit_str = f" {unit_friendly}" if unit_friendly and unit_friendly != "units" else ""
-        answer = f"{formatted_value}{unit_str} [{synthetic_cell.metadata_key}] (computed: {formula_desc})"
+        if is_ratio or is_plain_ratio:
+            # Ratios don't need unit suffix — the % or x is already in formatted_value
+            answer = f"{formatted_value} [{synthetic_cell.metadata_key}] (computed: {formula_desc})"
+        else:
+            unit_raw = anchor_cell.unit or ""
+            unit_friendly = _UNIT_DISPLAY_SYN.get(unit_raw, unit_raw)
+            unit_str = f" {unit_friendly}" if unit_friendly and unit_friendly != "units" else ""
+            answer = f"{formatted_value}{unit_str} [{synthetic_cell.metadata_key}] (computed: {formula_desc})"
 
         return SniperResult(
             sniper_hit=True, answer=answer, value=formatted_value,

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL    = "qwen2.5:3b"
 FALLBACK_MODEL   = "qwen2.5:3b"
 BASE_URL         = "http://localhost:11434"
-DEFAULT_TIMEOUT  = 90        # was 30 — Bug B3 fix: tolerate Ollama cold start
+DEFAULT_TIMEOUT  = 120       # Bug B3 v2: 120s tolerates cold start + long prompts
 DEFAULT_TEMP     = 0.1       # low temperature for factual financial QA
 MAX_RETRIES      = 1         # was 3 — Bug Fix 2: don't compound timeouts
 RETRY_DELAY      = 1.0       # seconds between retries (was 2.0)
@@ -73,7 +73,7 @@ class Gemma4Client:
         self._failure_count    = 0
         self._circuit_open     = False
         self._circuit_open_at  = 0.0
-        self._circuit_reset_s  = 60.0
+        self._circuit_reset_s  = 30.0   # Reset faster — 30s is enough to detect recovery
 
         # Stats
         self._total_calls      = 0
@@ -322,6 +322,12 @@ def get_llm_client(
         _default_client = Gemma4Client(model=model, base_url=base_url)
     return _default_client
 
+
+def reset_circuit_breaker() -> None:
+    """Reset the shared client's circuit breaker — call between eval companies."""
+    global _default_client
+    if _default_client is not None:
+        _default_client.reset_circuit()
 
 def reset_llm_client() -> None:
     """Reset the shared client — used in tests."""
