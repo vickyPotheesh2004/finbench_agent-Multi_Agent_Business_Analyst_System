@@ -369,7 +369,24 @@ def run_eval(args) -> list:
         for q in q_list:
             t0 = time.time()
             try:
-                state = pipeline.query(state, q["question"])
+                if args.sniper_only:
+                    # Fast mode: Sniper-only, skip BM25/BGE/LLM entirely
+                    state.query = q["question"]
+                    from src.retrieval.sniper_rag import SniperRAG, TableIndex
+                    if not hasattr(pipeline, '_sniper_index') or pipeline._sniper_index is None:
+                        pipeline._sniper_index = TableIndex.from_raw_cells(state.table_cells)
+                    sniper = SniperRAG(pipeline._sniper_index)
+                    result = sniper.hit(q["question"])
+                    if result.sniper_hit:
+                        state.final_answer = result.answer
+                        state.winning_pod = "SniperRAG"
+                        state.confidence_score = result.confidence
+                    else:
+                        state.final_answer = f"[SNIPER_MISS: {result.reason[:100]}]"
+                        state.winning_pod = "SniperRAG"
+                        state.confidence_score = 0.0
+                else:
+                    state = pipeline.query(state, q["question"])
                 elapsed = time.time() - t0
                 pred = str(getattr(state, "final_answer", "") or "")
                 correct, match_type = is_correct(pred, q["answer"])
@@ -515,6 +532,10 @@ def main():
     p.add_argument(
         "--skip-llm-check", action="store_true",
         help="Skip Ollama health check at startup"
+    )
+    p.add_argument(
+        "--sniper-only", action="store_true",
+        help="Skip BM25/BGE/LLM fallback — Sniper extraction only (10x faster)"
     )
     args = p.parse_args()
 
