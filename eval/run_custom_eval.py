@@ -76,20 +76,20 @@ def check_ollama_running() -> tuple:
                 return False, f"Ollama HTTP {resp.status}"
             data = json.loads(resp.read().decode())
             models = [m.get("name", "") for m in data.get("models", [])]
-            qwen_models = [m for m in models if "qwen2.5" in m.lower()]
-            if not qwen_models:
+            llama_models = [m for m in models if "llama3.1:8b " in m.lower()]
+            if not llama_models:
                 return False, (
-                    f"Ollama running but no qwen2.5 model found.\n"
+                    f"Ollama running but no llama3.1:8b  model found.\n"
                     f"   Available models: {models}\n"
-                    f"   Fix: ollama pull qwen2.5:3b"
+                    f"   Fix: ollama pull llama3.1:8b "
                 )
             
             # ── Bug B3 fix: warm up the model BEFORE eval starts ──
             # Without this, the model unloads during slow ingestion phases
             # and first LLM call hits cold start (30s+ timeout).
-            print(f"   ⏳ Warming up {qwen_models[0]} (~30s)...")
+            print(f"   ⏳ Warming up {llama_models[0]} (~30s)...")
             warmup_payload = json.dumps({
-                "model":   qwen_models[0],
+                "model":   llama_models[0],
                 "messages": [{"role": "user", "content": "Hello"}],
                 "stream":  False,
                 "keep_alive": "30m",  # keep loaded for 30 minutes
@@ -109,7 +109,7 @@ def check_ollama_running() -> tuple:
             except Exception as exc:
                 return False, f"Model warmup failed: {exc}"
             
-            return True, f"Ollama OK | models: {qwen_models}"
+            return True, f"Ollama OK | models: {llama_models}"
     except urllib.error.URLError as e:
         return False, (
             f"Ollama not reachable at localhost:11434 ({e.reason})\n"
@@ -118,7 +118,7 @@ def check_ollama_running() -> tuple:
     except Exception as exc:
         return False, f"Ollama health check failed: {exc}"
     """
-    Check if Ollama is running and qwen2.5:3b is available.
+    Check if Ollama is running and llama3.1:8b  is available.
     Returns (is_ok: bool, message: str).
     """
     try:
@@ -130,15 +130,15 @@ def check_ollama_running() -> tuple:
                 return False, f"Ollama HTTP {resp.status}"
             data = json.loads(resp.read().decode())
             models = [m.get("name", "") for m in data.get("models", [])]
-            # Look for any qwen2.5 variant
-            qwen_models = [m for m in models if "qwen2.5" in m.lower()]
-            if not qwen_models:
+            # Look for any llama3.1:8b  variant
+            llama_models = [m for m in models if "llama3.1:8b " in m.lower()]
+            if not llama_models:
                 return False, (
-                    f"Ollama running but no qwen2.5 model found.\n"
+                    f"Ollama running but no llama3.1:8b  model found.\n"
                     f"   Available models: {models}\n"
-                    f"   Fix: ollama pull qwen2.5:3b"
+                    f"   Fix: ollama pull llama3.1:8b "
                 )
-            return True, f"Ollama OK | models: {qwen_models}"
+            return True, f"Ollama OK | models: {llama_models}"
     except urllib.error.URLError as e:
         return False, (
             f"Ollama not reachable at localhost:11434 ({e.reason})\n"
@@ -250,11 +250,17 @@ def run_eval(args) -> list:
             print("   To start Ollama in a new PowerShell window:")
             print("       ollama serve")
             print("       (in another window)")
-            print("       ollama pull qwen2.5:3b")
+            print("       ollama pull llama3.1:8b ")
             print()
             # Don't abort — Sniper-only questions still work
             time.sleep(2)
     
+    # ── Speed optimization: skip BGE on local (CPU too slow, contributes 0 answers) ──
+    import os
+    if not os.environ.get("BGE_DEVICE"):
+        os.environ["DISABLE_BGE"] = "1"
+        print("   ⚡ BGE disabled for local eval (use Colab for GPU-accelerated BGE)")
+
     # ── Load questions ──
     questions = load_questions(args.company, args.limit)
     logger.info(
@@ -322,7 +328,7 @@ def run_eval(args) -> list:
             # Re-warm: keep model loaded during slow BGE ingest
             import urllib.request
             warmup = json.dumps({
-                "model": "qwen2.5:3b", "messages": [{"role": "user", "content": "ok"}],
+                "model": "llama3.1:8b ", "messages": [{"role": "user", "content": "ok"}],
                 "stream": False, "keep_alive": "30m",
                 "options": {"num_predict": 1},
             }).encode("utf-8")

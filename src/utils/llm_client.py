@@ -11,7 +11,7 @@ N14 BlindAuditor, N15 PIVMediator, N02 SectionTree summaries.
 Constraints:
     C1  $0 cost — local Ollama only
     C2  100% local — zero external network calls
-    C3  Model = qwen2.5:3b (default)
+    C3  Model = llama3.1:8b  (default)
     C5  seed=42
 
 CHANGELOG:
@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL    = "qwen2.5:3b"
-FALLBACK_MODEL   = "qwen2.5:3b"
+DEFAULT_MODEL    = "llama3.1:8b "
+FALLBACK_MODEL   = "llama3.1:8b "
 BASE_URL         = "http://localhost:11434"
 DEFAULT_TIMEOUT  = 120       # Bug B3 v2: 120s tolerates cold start + long prompts
 DEFAULT_TEMP     = 0.1       # low temperature for factual financial QA
