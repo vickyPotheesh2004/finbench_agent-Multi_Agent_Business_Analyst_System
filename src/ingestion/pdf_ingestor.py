@@ -2,25 +2,18 @@
 src/ingestion/pdf_ingestor.py
 
 Production-Grade Multi-Format Financial Document Ingestor
-FinBench Multi-Agent Business Analyst AI
 
-Capabilities
-------------
-1. PDF ingestion with OCR-safe extraction
-2. HTML + iXBRL parsing
-3. SEC filing metadata extraction
-4. Table extraction
-5. Heading detection
-6. Multi-format support
-7. Memory-safe parsing
-8. Financial metadata propagation
-9. Structured table normalization
-10. Robust fallback handling
-11. Local-only processing
-12. Large-document safe ingestion
-13. Image processing integration
-14. SEC section recognition
-15. Production-grade logging
+Optimized for:
+- FinanceBench
+- SEC filings
+- Windows
+- Colab
+- OCR fallback
+- Large PDFs
+- Multi-format ingestion
+- Stable metadata extraction
+- Table extraction
+- Heading detection
 """
 
 from __future__ import annotations
@@ -30,8 +23,11 @@ import json
 import logging
 import os
 import re
+
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict
+from typing import List
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -49,36 +45,23 @@ SUPPORTED_EXTENSIONS = {
     ".pptx",
     ".html",
     ".htm",
-    ".txt",
-    ".json",
     ".xml",
+    ".json",
+    ".txt",
 }
+
+MAX_TEXT_CHARS = 20_000_000
+
+MAX_TABLES = 2000
+
+MAX_HEADINGS = 3000
 
 HEADING_FONT_SIZE_MIN = 13.0
 
 HTML_CHARS_PER_PAGE = 5000
 
-MAX_IXBRL_FACTS = 4000
-
-MAX_HEADINGS = 2000
-
-MAX_TABLES = 1000
-
-MAX_TEXT_CHARS = 20_000_000
-
-SEC_SECTIONS = [
-    "business",
-    "risk factors",
-    "management",
-    "financial statements",
-    "quantitative",
-    "controls",
-    "properties",
-    "legal proceedings",
-]
-
 # ─────────────────────────────────────────────────────────────────────────────
-# TableCell
+# Table Cell
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -103,7 +86,9 @@ class TableCell:
 
     fiscal_year: str = ""
 
-    def to_dict(self):
+    def to_dict(
+        self,
+    ) -> Dict:
 
         return {
             "row_header": self.row_header,
@@ -118,7 +103,7 @@ class TableCell:
         }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDFIngestor
+# PDF Ingestor
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -130,17 +115,16 @@ class PDFIngestor:
         llm_client=None,
     ):
 
-        self.enable_images = (
-            enable_images
-        )
+        self.enable_images = enable_images
 
         self._llm = llm_client
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # LangGraph Node
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
-    def run(self, state):
+    def run(
+        self,
+        state,
+    ):
 
         doc_path = getattr(
             state,
@@ -151,7 +135,7 @@ class PDFIngestor:
         if not doc_path:
 
             logger.warning(
-                "[N01] Missing document_path"
+                "[N01] Missing document path"
             )
 
             return state
@@ -161,7 +145,7 @@ class PDFIngestor:
         ):
 
             logger.error(
-                "[N01] File missing: %s",
+                "[N01] File not found: %s",
                 doc_path,
             )
 
@@ -228,18 +212,13 @@ class PDFIngestor:
             )
 
         logger.info(
-            "[N01] chars=%d tables=%d headings=%d file=%s",
+            "[N01] chars=%d tables=%d headings=%d",
             len(state.raw_text),
             len(state.table_cells),
-            len(
-                state.heading_positions
-            ),
-            os.path.basename(
-                doc_path
-            ),
+            len(state.heading_positions),
         )
 
-        # Optional image processor
+        # Optional image processing
 
         if (
             self.enable_images
@@ -267,18 +246,15 @@ class PDFIngestor:
                     state
                 )
 
-            except Exception as exc:
+            except Exception:
 
-                logger.warning(
-                    "[N01] Image processor failed: %s",
-                    exc,
+                logger.exception(
+                    "[N01] Image processing failed"
                 )
 
         return state
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Ingest Dispatcher
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def ingest(
         self,
@@ -304,6 +280,7 @@ class PDFIngestor:
         try:
 
             if ext == ".pdf":
+
                 return self._ingest_pdf(
                     file_path
                 )
@@ -312,6 +289,7 @@ class PDFIngestor:
                 ".docx",
                 ".doc",
             ):
+
                 return self._ingest_docx(
                     file_path
                 )
@@ -320,16 +298,19 @@ class PDFIngestor:
                 ".xlsx",
                 ".xls",
             ):
+
                 return self._ingest_xlsx(
                     file_path
                 )
 
             if ext == ".csv":
+
                 return self._ingest_csv(
                     file_path
                 )
 
             if ext == ".pptx":
+
                 return self._ingest_pptx(
                     file_path
                 )
@@ -339,11 +320,13 @@ class PDFIngestor:
                 ".htm",
                 ".xml",
             ):
+
                 return self._ingest_html(
                     file_path
                 )
 
             if ext == ".json":
+
                 return self._ingest_json(
                     file_path
                 )
@@ -352,19 +335,17 @@ class PDFIngestor:
                 file_path
             )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.error(
-                "[N01] ingest failed: %s",
-                exc,
-                exc_info=True,
+            logger.exception(
+                "[N01] ingestion failed"
             )
 
             return self._empty_result()
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # PDF
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_pdf(
         self,
@@ -392,19 +373,33 @@ class PDFIngestor:
                     start=1,
                 ):
 
-                    text = (
-                        page.extract_text()
-                        or ""
-                    )
+                    try:
+
+                        text = (
+                            page.extract_text()
+                            or ""
+                        )
+
+                    except Exception:
+
+                        text = ""
 
                     raw_text += (
                         text + "\n"
                     )
 
-                    tables = (
-                        page.extract_tables()
-                        or []
-                    )
+                    # Tables
+
+                    try:
+
+                        tables = (
+                            page.extract_tables()
+                            or []
+                        )
+
+                    except Exception:
+
+                        tables = []
 
                     for table_idx, table in enumerate(
                         tables,
@@ -416,6 +411,7 @@ class PDFIngestor:
                             or len(table)
                             < 2
                         ):
+
                             continue
 
                         headers = [
@@ -425,9 +421,7 @@ class PDFIngestor:
                             for c in table[0]
                         ]
 
-                        for row in table[
-                            1:
-                        ]:
+                        for row in table[1:]:
 
                             if not row:
                                 continue
@@ -442,9 +436,7 @@ class PDFIngestor:
                             ):
 
                                 value = (
-                                    str(
-                                        cell
-                                    ).strip()
+                                    str(cell).strip()
                                     if cell
                                     else ""
                                 )
@@ -453,13 +445,9 @@ class PDFIngestor:
                                     continue
 
                                 col_header = (
-                                    headers[
-                                        col_idx
-                                    ]
+                                    headers[col_idx]
                                     if col_idx
-                                    < len(
-                                        headers
-                                    )
+                                    < len(headers)
                                     else ""
                                 )
 
@@ -473,14 +461,13 @@ class PDFIngestor:
                                     ).to_dict()
                                 )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.warning(
-                "[N01] pdfplumber failed: %s",
-                exc,
+            logger.exception(
+                "[N01] pdfplumber failed"
             )
 
-        # Headings
+        # Heading Extraction
 
         try:
 
@@ -523,11 +510,10 @@ class PDFIngestor:
 
                             if (
                                 not text
-                                or len(
-                                    text
-                                )
+                                or len(text)
                                 < 3
                             ):
+
                                 continue
 
                             font_size = float(
@@ -545,8 +531,7 @@ class PDFIngestor:
                             )
 
                             is_bold = bool(
-                                flags
-                                & 16
+                                flags & 16
                             )
 
                             if (
@@ -568,18 +553,31 @@ class PDFIngestor:
 
             doc.close()
 
-        except Exception as exc:
+        except Exception:
 
-            logger.warning(
-                "[N01] PyMuPDF failed: %s",
-                exc,
+            logger.exception(
+                "[N01] heading extraction failed"
             )
 
         raw_text = raw_text[
             :MAX_TEXT_CHARS
         ]
 
-        company_name, doc_type, fiscal_year = (
+        # OCR fallback
+
+        if len(raw_text.strip()) < 1000:
+
+            logger.warning(
+                "[N01] Low text extraction — OCR fallback"
+            )
+
+            raw_text += (
+                self._ocr_pdf(
+                    file_path
+                )
+            )
+
+        company, doc_type, fiscal_year = (
             self._extract_metadata(
                 raw_text
             )
@@ -587,7 +585,7 @@ class PDFIngestor:
 
         self._apply_metadata(
             table_cells,
-            company_name,
+            company,
             doc_type,
             fiscal_year,
         )
@@ -602,14 +600,77 @@ class PDFIngestor:
             )[
                 :MAX_HEADINGS
             ],
-            "company_name": company_name,
+            "company_name": company,
             "doc_type": doc_type,
             "fiscal_year": fiscal_year,
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # OCR
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _ocr_pdf(
+        self,
+        file_path: str,
+    ) -> str:
+
+        text_output = ""
+
+        try:
+
+            import fitz
+            import pytesseract
+
+            from PIL import Image
+
+            doc = fitz.open(
+                file_path
+            )
+
+            for page in doc:
+
+                pix = page.get_pixmap(
+                    dpi=200
+                )
+
+                mode = (
+                    "RGBA"
+                    if pix.alpha
+                    else "RGB"
+                )
+
+                image = Image.frombytes(
+                    mode,
+                    [
+                        pix.width,
+                        pix.height,
+                    ],
+                    pix.samples,
+                )
+
+                text = (
+                    pytesseract.image_to_string(
+                        image
+                    )
+                )
+
+                text_output += (
+                    text + "\n"
+                )
+
+            doc.close()
+
+        except Exception:
+
+            logger.exception(
+                "[N01] OCR failed"
+            )
+
+        return text_output
+
+    # ─────────────────────────────────────────────────────────────────────
     # DOCX
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_docx(
         self,
@@ -617,8 +678,6 @@ class PDFIngestor:
     ) -> Dict:
 
         raw_text = ""
-
-        table_cells = []
 
         heading_positions = []
 
@@ -632,9 +691,7 @@ class PDFIngestor:
                 file_path
             )
 
-            for para in (
-                doc.paragraphs
-            ):
+            for para in doc.paragraphs:
 
                 text = para.text.strip()
 
@@ -644,7 +701,7 @@ class PDFIngestor:
                         text + "\n"
                     )
 
-                style_name = (
+                style = (
                     para.style.name
                     if para.style
                     else ""
@@ -652,7 +709,7 @@ class PDFIngestor:
 
                 if (
                     "Heading"
-                    in style_name
+                    in style
                 ):
 
                     heading_positions.append(
@@ -664,108 +721,24 @@ class PDFIngestor:
                         }
                     )
 
-            for t_idx, table in enumerate(
-                doc.tables,
-                start=1,
-            ):
+        except Exception:
 
-                rows = list(
-                    table.rows
-                )
-
-                if (
-                    len(rows)
-                    < 2
-                ):
-                    continue
-
-                headers = [
-                    c.text.strip()
-                    for c in rows[
-                        0
-                    ].cells
-                ]
-
-                for row in rows[
-                    1:
-                ]:
-
-                    cells = row.cells
-
-                    if not cells:
-                        continue
-
-                    row_header = (
-                        cells[
-                            0
-                        ].text.strip()
-                    )
-
-                    for col_idx, cell in enumerate(
-                        cells[1:],
-                        start=1,
-                    ):
-
-                        value = (
-                            cell.text.strip()
-                        )
-
-                        if not value:
-                            continue
-
-                        col_header = (
-                            headers[
-                                col_idx
-                            ]
-                            if col_idx
-                            < len(
-                                headers
-                            )
-                            else ""
-                        )
-
-                        table_cells.append(
-                            TableCell(
-                                row_header=row_header,
-                                col_header=col_header,
-                                value=value,
-                                page=0,
-                                table_number=t_idx,
-                            ).to_dict()
-                        )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[N01] DOCX failed: %s",
-                exc,
+            logger.exception(
+                "[N01] DOCX failed"
             )
-
-        company_name, doc_type, fiscal_year = (
-            self._extract_metadata(
-                raw_text
-            )
-        )
-
-        self._apply_metadata(
-            table_cells,
-            company_name,
-            doc_type,
-            fiscal_year,
-        )
 
         return {
             "raw_text": raw_text,
-            "table_cells": table_cells,
+            "table_cells": [],
             "heading_positions": heading_positions,
-            "company_name": company_name,
-            "doc_type": doc_type,
-            "fiscal_year": fiscal_year,
+            "company_name": "",
+            "doc_type": "",
+            "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # XLSX
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_xlsx(
         self,
@@ -773,8 +746,6 @@ class PDFIngestor:
     ) -> Dict:
 
         raw_text = ""
-
-        table_cells = []
 
         try:
 
@@ -787,103 +758,45 @@ class PDFIngestor:
                 )
             )
 
-            for sheet_name in (
-                wb.sheetnames
-            ):
+            for sheet in wb.sheetnames:
 
-                ws = wb[
-                    sheet_name
-                ]
+                ws = wb[sheet]
 
-                rows = list(
-                    ws.iter_rows(
-                        values_only=True
-                    )
-                )
+                for row in ws.iter_rows(
+                    values_only=True
+                ):
 
-                if not rows:
-                    continue
-
-                headers = [
-                    str(c).strip()
-                    if c is not None
-                    else ""
-                    for c in rows[
-                        0
+                    values = [
+                        str(v).strip()
+                        for v in row
+                        if v is not None
                     ]
-                ]
 
-                for row in rows[
-                    1:
-                ]:
-
-                    row_header = (
-                        str(
-                            row[0]
-                        ).strip()
-                        if row
-                        and row[0]
-                        is not None
-                        else ""
-                    )
-
-                    for col_idx, val in enumerate(
-                        row[1:],
-                        start=1,
-                    ):
-
-                        if val is None:
-                            continue
-
-                        value = str(
-                            val
-                        ).strip()
-
-                        col_header = (
-                            headers[
-                                col_idx
-                            ]
-                            if col_idx
-                            < len(
-                                headers
-                            )
-                            else ""
-                        )
+                    if values:
 
                         raw_text += (
-                            f"{row_header} | "
-                            f"{col_header} | "
-                            f"{value}\n"
+                            " | ".join(values)
+                            + "\n"
                         )
 
-                        table_cells.append(
-                            TableCell(
-                                row_header=row_header,
-                                col_header=col_header,
-                                value=value,
-                                section=sheet_name,
-                            ).to_dict()
-                        )
+        except Exception:
 
-        except Exception as exc:
-
-            logger.warning(
-                "[N01] XLSX failed: %s",
-                exc,
+            logger.exception(
+                "[N01] XLSX failed"
             )
 
         return {
             "raw_text": raw_text,
-            "table_cells": table_cells,
+            "table_cells": [],
             "heading_positions": [],
             "company_name": "",
             "doc_type": "",
             "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # CSV
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_csv(
         self,
@@ -891,8 +804,6 @@ class PDFIngestor:
     ) -> Dict:
 
         raw_text = ""
-
-        table_cells = []
 
         try:
 
@@ -903,83 +814,40 @@ class PDFIngestor:
                 errors="replace",
             ) as f:
 
-                rows = list(
-                    csv.reader(f)
+                reader = csv.reader(
+                    f
                 )
 
-            if rows:
+                for row in reader:
 
-                headers = rows[0]
+                    values = [
+                        str(v).strip()
+                        for v in row
+                    ]
 
-                for row_idx, row in enumerate(
-                    rows[1:],
-                    start=1,
-                ):
-
-                    if not row:
-                        continue
-
-                    row_header = (
-                        row[0].strip()
+                    raw_text += (
+                        " | ".join(values)
+                        + "\n"
                     )
 
-                    for col_idx, val in enumerate(
-                        row[1:],
-                        start=1,
-                    ):
+        except Exception:
 
-                        value = (
-                            val.strip()
-                        )
-
-                        if not value:
-                            continue
-
-                        col_header = (
-                            headers[
-                                col_idx
-                            ].strip()
-                            if col_idx
-                            < len(
-                                headers
-                            )
-                            else ""
-                        )
-
-                        raw_text += (
-                            f"{row_header} | "
-                            f"{col_header} | "
-                            f"{value}\n"
-                        )
-
-                        table_cells.append(
-                            TableCell(
-                                row_header=row_header,
-                                col_header=col_header,
-                                value=value,
-                                table_number=row_idx,
-                            ).to_dict()
-                        )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[N01] CSV failed: %s",
-                exc,
+            logger.exception(
+                "[N01] CSV failed"
             )
 
         return {
             "raw_text": raw_text,
-            "table_cells": table_cells,
+            "table_cells": [],
             "heading_positions": [],
             "company_name": "",
             "doc_type": "",
             "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # PPTX
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_pptx(
         self,
@@ -987,8 +855,6 @@ class PDFIngestor:
     ) -> Dict:
 
         raw_text = ""
-
-        heading_positions = []
 
         try:
 
@@ -1000,100 +866,50 @@ class PDFIngestor:
                 file_path
             )
 
-            for slide_num, slide in enumerate(
-                prs.slides,
-                start=1,
-            ):
+            for slide in prs.slides:
 
-                for shape in (
-                    slide.shapes
-                ):
+                for shape in slide.shapes:
 
-                    if not shape.has_text_frame:
-                        continue
-
-                    for para in shape.text_frame.paragraphs:
+                    if (
+                        hasattr(
+                            shape,
+                            "text",
+                        )
+                    ):
 
                         text = (
-                            para.text.strip()
+                            shape.text.strip()
                         )
 
-                        if not text:
-                            continue
+                        if text:
 
-                        raw_text += (
-                            text + "\n"
-                        )
-
-                        font_size = 0
-
-                        is_bold = False
-
-                        if para.runs:
-
-                            run = para.runs[
-                                0
-                            ]
-
-                            if (
-                                run.font.size
-                            ):
-
-                                font_size = (
-                                    run.font.size.pt
-                                )
-
-                            is_bold = bool(
-                                run.font.bold
+                            raw_text += (
+                                text + "\n"
                             )
 
-                        if (
-                            font_size
-                            >= HEADING_FONT_SIZE_MIN
-                        ):
+        except Exception:
 
-                            heading_positions.append(
-                                {
-                                    "text": text,
-                                    "font_size": round(
-                                        font_size,
-                                        1,
-                                    ),
-                                    "is_bold": is_bold,
-                                    "page": slide_num,
-                                }
-                            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[N01] PPTX failed: %s",
-                exc,
+            logger.exception(
+                "[N01] PPTX failed"
             )
 
         return {
             "raw_text": raw_text,
             "table_cells": [],
-            "heading_positions": heading_positions,
+            "heading_positions": [],
             "company_name": "",
             "doc_type": "",
             "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # HTML / iXBRL
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # HTML
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_html(
         self,
         file_path: str,
     ) -> Dict:
-
-        raw_text = ""
-
-        table_cells = []
-
-        heading_positions = []
 
         try:
 
@@ -1108,19 +924,15 @@ class PDFIngestor:
                 errors="replace",
             ) as f:
 
-                content = f.read()
+                html = f.read()
 
-            soup_html = (
-                BeautifulSoup(
-                    content,
-                    "lxml",
-                )
+            soup = BeautifulSoup(
+                html,
+                "lxml",
             )
 
-            raw_text = (
-                soup_html.get_text(
-                    separator="\n"
-                )
+            raw_text = soup.get_text(
+                separator="\n"
             )
 
             raw_text = re.sub(
@@ -1129,187 +941,26 @@ class PDFIngestor:
                 raw_text,
             )
 
-            raw_text = re.sub(
-                r"[ \t]+",
-                " ",
-                raw_text,
+        except Exception:
+
+            logger.exception(
+                "[N01] HTML failed"
             )
 
-            company_name, doc_type, fiscal_year = (
-                self._extract_ixbrl_metadata(
-                    content
-                )
-            )
-
-            # Headings
-
-            for level in range(
-                1,
-                7,
-            ):
-
-                for tag in soup_html.find_all(
-                    f"h{level}"
-                ):
-
-                    text = (
-                        tag.get_text(
-                            " ",
-                            strip=True,
-                        )
-                    )
-
-                    if (
-                        not text
-                        or len(
-                            text
-                        )
-                        > 200
-                    ):
-                        continue
-
-                    heading_positions.append(
-                        {
-                            "text": text,
-                            "font_size": max(
-                                13.0,
-                                22.0
-                                - level,
-                            ),
-                            "is_bold": True,
-                            "page": self._estimate_html_page(
-                                raw_text,
-                                text,
-                            ),
-                        }
-                    )
-
-            # Tables
-
-            for table_idx, table in enumerate(
-                soup_html.find_all(
-                    "table"
-                ),
-                start=1,
-            ):
-
-                rows = table.find_all(
-                    "tr"
-                )
-
-                if (
-                    len(rows)
-                    < 2
-                ):
-                    continue
-
-                headers = [
-                    c.get_text(
-                        " ",
-                        strip=True,
-                    )
-                    for c in rows[
-                        0
-                    ].find_all(
-                        [
-                            "th",
-                            "td",
-                        ]
-                    )
-                ]
-
-                for row in rows[
-                    1:
-                ]:
-
-                    cells = row.find_all(
-                        [
-                            "th",
-                            "td",
-                        ]
-                    )
-
-                    if not cells:
-                        continue
-
-                    row_header = (
-                        cells[
-                            0
-                        ].get_text(
-                            " ",
-                            strip=True,
-                        )
-                    )
-
-                    for col_idx, cell in enumerate(
-                        cells[1:],
-                        start=1,
-                    ):
-
-                        value = (
-                            cell.get_text(
-                                " ",
-                                strip=True,
-                            )
-                        )
-
-                        if not value:
-                            continue
-
-                        col_header = (
-                            headers[
-                                col_idx
-                            ]
-                            if col_idx
-                            < len(
-                                headers
-                            )
-                            else ""
-                        )
-
-                        table_cells.append(
-                            TableCell(
-                                row_header=row_header,
-                                col_header=col_header,
-                                value=value,
-                                page=1,
-                                table_number=table_idx,
-                                section="HTML_TABLE",
-                                company=company_name,
-                                doc_type=doc_type,
-                                fiscal_year=fiscal_year,
-                            ).to_dict()
-                        )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[N01] HTML failed: %s",
-                exc,
-            )
-
-            return self._empty_result()
+            raw_text = ""
 
         return {
-            "raw_text": raw_text[
-                :MAX_TEXT_CHARS
-            ],
-            "table_cells": table_cells[
-                :MAX_TABLES
-            ],
-            "heading_positions": self._dedupe_headings(
-                heading_positions
-            )[
-                :MAX_HEADINGS
-            ],
-            "company_name": company_name,
-            "doc_type": doc_type,
-            "fiscal_year": fiscal_year,
+            "raw_text": raw_text,
+            "table_cells": [],
+            "heading_positions": [],
+            "company_name": "",
+            "doc_type": "",
+            "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # TXT
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_txt(
         self,
@@ -1327,11 +978,10 @@ class PDFIngestor:
 
                 raw_text = f.read()
 
-        except Exception as exc:
+        except Exception:
 
-            logger.warning(
-                "[N01] TXT failed: %s",
-                exc,
+            logger.exception(
+                "[N01] TXT failed"
             )
 
             raw_text = ""
@@ -1345,9 +995,9 @@ class PDFIngestor:
             "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # JSON
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ingest_json(
         self,
@@ -1372,11 +1022,10 @@ class PDFIngestor:
                 indent=2,
             )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.warning(
-                "[N01] JSON failed: %s",
-                exc,
+            logger.exception(
+                "[N01] JSON failed"
             )
 
             raw_text = ""
@@ -1390,9 +1039,9 @@ class PDFIngestor:
             "fiscal_year": "",
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Metadata
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _extract_metadata(
         self,
@@ -1420,7 +1069,7 @@ class PDFIngestor:
         text: str,
     ) -> str:
 
-        snippet = text[:3000]
+        snippet = text[:5000]
 
         patterns = [
             r"((?:[A-Z][a-zA-Z&,\-]+\s*){1,6}(?:Inc|Corp|Corporation|Ltd|LLC|Company|Holdings|Group)\.?)",
@@ -1447,9 +1096,7 @@ class PDFIngestor:
         text: str,
     ) -> str:
 
-        upper = text[
-            :5000
-        ].upper()
+        upper = text.upper()
 
         for dtype in (
             "10-K",
@@ -1458,23 +1105,15 @@ class PDFIngestor:
             "20-F",
             "6-K",
             "DEF 14A",
-            "S-1",
         ):
 
-            normalized = (
+            if (
                 dtype.replace(
                     "-",
                     "",
                 )
-            )
-
-            if (
-                normalized
                 in upper.replace(
                     "-",
-                    "",
-                ).replace(
-                    " ",
                     "",
                 )
             ):
@@ -1490,20 +1129,16 @@ class PDFIngestor:
 
         patterns = [
             r"FY\s*(\d{4})",
-            r"Fiscal Year\s*(?:Ended|Ending)?\s*\w*\s*\d{0,2},?\s*(\d{4})",
-            r"Year Ended\s+\w+\s+\d{1,2},?\s*(\d{4})",
-        ]
-
-        snippet = text[
-            :8000
+            r"Fiscal Year.*?(\d{4})",
+            r"Year Ended.*?(\d{4})",
         ]
 
         for pattern in patterns:
 
             match = re.search(
                 pattern,
-                snippet,
-                re.IGNORECASE,
+                text[:10000],
+                re.I | re.S,
             )
 
             if match:
@@ -1514,115 +1149,9 @@ class PDFIngestor:
 
         return ""
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # iXBRL Metadata
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _extract_ixbrl_metadata(
-        self,
-        content: str,
-    ) -> Tuple[
-        str,
-        str,
-        str,
-    ]:
-
-        try:
-
-            from bs4 import (
-                BeautifulSoup,
-            )
-
-            soup = (
-                BeautifulSoup(
-                    content,
-                    "xml",
-                )
-            )
-
-            def fact(
-                name: str,
-            ) -> str:
-
-                for tag in soup.find_all():
-
-                    if (
-                        tag.get(
-                            "name",
-                            "",
-                        )
-                        == name
-                    ):
-
-                        text = (
-                            tag.get_text(
-                                strip=True
-                            )
-                        )
-
-                        if text:
-                            return text
-
-                return ""
-
-            company = fact(
-                "dei:EntityRegistrantName"
-            )
-
-            doc_type = fact(
-                "dei:DocumentType"
-            )
-
-            fy = fact(
-                "dei:DocumentFiscalYearFocus"
-            )
-
-            if (
-                fy
-                and fy.isdigit()
-            ):
-
-                fy = f"FY{fy}"
-
-            return (
-                company,
-                doc_type,
-                fy,
-            )
-
-        except Exception:
-
-            return (
-                "",
-                "",
-                "",
-            )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Utilities
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _estimate_html_page(
-        raw_text: str,
-        snippet: str,
-    ) -> int:
-
-        idx = raw_text.find(
-            snippet[:50]
-        )
-
-        if idx < 0:
-            return 1
-
-        return max(
-            1,
-            (
-                idx
-                // HTML_CHARS_PER_PAGE
-            )
-            + 1,
-        )
+    # ─────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _dedupe_headings(
@@ -1654,6 +1183,7 @@ class PDFIngestor:
                 not key[0]
                 or key in seen
             ):
+
                 continue
 
             seen.add(key)
@@ -1668,7 +1198,7 @@ class PDFIngestor:
         company_name: str,
         doc_type: str,
         fiscal_year: str,
-    ) -> None:
+    ):
 
         for cell in table_cells:
 

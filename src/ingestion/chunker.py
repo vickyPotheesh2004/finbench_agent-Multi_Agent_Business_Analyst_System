@@ -2,35 +2,28 @@
 src/ingestion/chunker.py
 
 Production-Grade Chunker + Index Builder
-FinBench Multi-Agent Business Analyst AI
 
-Capabilities
-------------
-1. Section-boundary chunking
-2. Metadata-safe chunks (C8 enforced)
-3. BM25 index building
-4. ChromaDB vector collection building
-5. Large-document safe chunk splitting
-6. Sentence-aware chunk segmentation
-7. Financial retrieval optimization
-8. Chunk overlap preservation
-9. Section hierarchy support
-10. Narrative recall optimization
-11. Deterministic chunk IDs
-12. ChromaDB-safe collection names
-13. Memory-safe indexing
-14. Production-safe fallbacks
-15. Retrieval metadata persistence
+Optimized for:
+- Windows
+- Colab
+- FinanceBench
+- Low RAM
+- T4 GPUs
+- Large SEC filings
+- Stable ChromaDB integration
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict
+from typing import List
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 SEED = 42
 
-MAX_CHUNK_TOKENS = 400
+MAX_CHUNK_TOKENS = 350
 
 MIN_CHUNK_CHARS = 50
 
@@ -53,6 +46,29 @@ MAX_SECTION_CHARS = 50_000
 MAX_SECTION_NAME = 200
 
 MAX_PREFIX_CHARS = 500
+
+BM25_BATCH_SIZE = 500
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def cleanup_memory():
+
+    gc.collect()
+
+    try:
+
+        import torch
+
+        if torch.cuda.is_available():
+
+            torch.cuda.empty_cache()
+
+    except Exception:
+        pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DocumentChunk
@@ -84,7 +100,7 @@ class DocumentChunk:
 
     def __post_init__(
         self,
-    ) -> None:
+    ):
 
         self.text = (
             self.text or ""
@@ -162,6 +178,7 @@ class DocumentChunk:
             "token_estimate": self.token_estimate,
         }
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Chunker
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,13 +192,11 @@ class Chunker:
         chromadb_dir: str = "data/chromadb",
         max_tokens: int = MAX_CHUNK_TOKENS,
         seed: int = SEED,
-    ) -> None:
+    ):
 
         self.bm25_dir = bm25_dir
 
-        self.chromadb_dir = (
-            chromadb_dir
-        )
+        self.chromadb_dir = chromadb_dir
 
         self.max_tokens = int(
             max_tokens
@@ -189,9 +204,7 @@ class Chunker:
 
         self.seed = int(seed)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # LangGraph Node
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def run(
         self,
@@ -214,30 +227,30 @@ class Chunker:
             state,
             "company_name",
             "UNKNOWN",
-        ) or "UNKNOWN"
+        )
 
         doc_type = getattr(
             state,
             "doc_type",
             "UNKNOWN",
-        ) or "UNKNOWN"
+        )
 
         fiscal_year = getattr(
             state,
             "fiscal_year",
             "UNKNOWN",
-        ) or "UNKNOWN"
+        )
 
         session_id = getattr(
             state,
             "session_id",
             "default",
-        ) or "default"
+        )
 
-        if not raw_text:
+        if not raw_text.strip():
 
             logger.warning(
-                "[N03] Empty raw_text"
+                "[N03] Empty document"
             )
 
             state.chunk_count = 0
@@ -267,15 +280,35 @@ class Chunker:
             safe_session,
         )
 
-        self._build_bm25_index(
-            chunks,
-            bm25_path,
-        )
+        # BM25
 
-        self._build_chromadb_index(
-            chunks,
-            collection_name,
-        )
+        try:
+
+            self._build_bm25_index(
+                chunks,
+                bm25_path,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "[N03] BM25 failed"
+            )
+
+        # Chroma
+
+        try:
+
+            self._build_chromadb_index(
+                chunks,
+                collection_name,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "[N03] Chroma failed"
+            )
 
         state.chunk_count = len(
             chunks
@@ -289,45 +322,25 @@ class Chunker:
             collection_name
         )
 
-        chromadb_path_norm = (
-            os.path.normpath(
-                self.chromadb_dir
-            )
-        )
-
-        if (
-            os.path.basename(
-                chromadb_path_norm
-            )
-            == "chromadb"
-        ):
-
-            data_dir = os.path.dirname(
-                chromadb_path_norm
-            ) or "."
-
-        else:
-
-            data_dir = os.path.dirname(
-                chromadb_path_norm
-            ) or "."
-
         state.chromadb_data_dir = (
-            data_dir
+            os.path.dirname(
+                os.path.normpath(
+                    self.chromadb_dir
+                )
+            )
+            or "."
         )
+
+        cleanup_memory()
 
         logger.info(
-            "[N03] chunks=%d bm25=%s chroma=%s",
+            "[N03] Chunking complete | chunks=%d",
             len(chunks),
-            bm25_path,
-            collection_name,
         )
 
         return state
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Chunk
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def chunk(
         self,
@@ -347,9 +360,7 @@ class Chunker:
             else []
         )
 
-        chunks: List[
-            DocumentChunk
-        ] = []
+        chunks = []
 
         if sections:
 
@@ -401,9 +412,7 @@ class Chunker:
 
         return chunks
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Section Chunking
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _chunk_by_sections(
         self,
@@ -438,9 +447,8 @@ class Chunker:
 
             next_section = ""
 
-            if (
-                idx + 1
-                < len(sections)
+            if idx + 1 < len(
+                sections
             ):
 
                 next_section = sections[
@@ -454,7 +462,7 @@ class Chunker:
                 self._extract_section_text(
                     raw_text,
                     section_name,
-                    end_section_name=next_section,
+                    next_section,
                 )
             )
 
@@ -486,65 +494,9 @@ class Chunker:
                 sub_chunks
             )
 
-            for child in section.get(
-                "children",
-                [],
-            ):
-
-                child_name = (
-                    child.get(
-                        "name",
-                        section_name,
-                    )
-                )
-
-                child_page = int(
-                    child.get(
-                        "start_page",
-                        start_page,
-                    )
-                )
-
-                child_text = (
-                    self._extract_section_text(
-                        raw_text,
-                        child_name,
-                    )
-                )
-
-                if (
-                    not child_text
-                    or len(child_text)
-                    < MIN_CHUNK_CHARS
-                ):
-
-                    continue
-
-                child_chunks = (
-                    self._split_large_text(
-                        text=child_text,
-                        company=company,
-                        doc_type=doc_type,
-                        fiscal_year=fiscal_year,
-                        section=child_name,
-                        page=child_page,
-                        base_id=chunk_id,
-                    )
-                )
-
-                chunks.extend(
-                    child_chunks
-                )
-
-                chunk_id += len(
-                    child_chunks
-                )
-
         return chunks
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Paragraph Chunking
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _chunk_by_paragraphs(
         self,
@@ -553,10 +505,6 @@ class Chunker:
         doc_type: str,
         fiscal_year: str,
     ) -> List[DocumentChunk]:
-
-        max_chars = (
-            self.max_tokens * 4
-        )
 
         paragraphs = re.split(
             r"\n\s*\n",
@@ -576,7 +524,6 @@ class Chunker:
             para = para.strip()
 
             if not para:
-
                 continue
 
             if (
@@ -584,68 +531,31 @@ class Chunker:
                 < MIN_CHUNK_CHARS
             ):
 
-                wc = len(
-                    para.split()
-                )
-
-                if (
-                    1 <= wc <= 5
-                    and len(para)
-                    <= 60
-                ):
-
-                    current_section = para[
-                        :50
-                    ]
-
                 continue
 
-            if (
-                len(para)
-                > max_chars
-            ):
-
-                sub_chunks = (
-                    self._split_large_text(
-                        text=para,
-                        company=company,
-                        doc_type=doc_type,
-                        fiscal_year=fiscal_year,
-                        section=current_section,
-                        page=0,
-                        base_id=chunk_id,
-                    )
+            sub_chunks = (
+                self._split_large_text(
+                    text=para,
+                    company=company,
+                    doc_type=doc_type,
+                    fiscal_year=fiscal_year,
+                    section=current_section,
+                    page=0,
+                    base_id=chunk_id,
                 )
+            )
 
-                chunks.extend(
-                    sub_chunks
-                )
+            chunks.extend(
+                sub_chunks
+            )
 
-                chunk_id += len(
-                    sub_chunks
-                )
-
-            else:
-
-                chunks.append(
-                    DocumentChunk(
-                        chunk_id=f"chunk_{chunk_id:04d}",
-                        text=para,
-                        company=company,
-                        doc_type=doc_type,
-                        fiscal_year=fiscal_year,
-                        section=current_section,
-                        page=0,
-                    )
-                )
-
-                chunk_id += 1
+            chunk_id += len(
+                sub_chunks
+            )
 
         return chunks
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Split Large Text
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _split_large_text(
         self,
@@ -664,14 +574,11 @@ class Chunker:
 
         text = text.strip()
 
-        if (
-            len(text)
-            <= max_chars
-        ):
+        if len(text) <= max_chars:
 
             return [
                 DocumentChunk(
-                    chunk_id=f"chunk_{base_id:04d}",
+                    chunk_id=f"chunk_{base_id:05d}",
                     text=text,
                     company=company,
                     doc_type=doc_type,
@@ -712,7 +619,7 @@ class Chunker:
 
                 chunks.append(
                     DocumentChunk(
-                        chunk_id=f"chunk_{base_id + idx:04d}",
+                        chunk_id=f"chunk_{base_id + idx:05d}",
                         text=current.strip(),
                         company=company,
                         doc_type=doc_type,
@@ -750,7 +657,7 @@ class Chunker:
 
             chunks.append(
                 DocumentChunk(
-                    chunk_id=f"chunk_{base_id + idx:04d}",
+                    chunk_id=f"chunk_{base_id + idx:05d}",
                     text=current.strip(),
                     company=company,
                     doc_type=doc_type,
@@ -762,9 +669,7 @@ class Chunker:
 
         return chunks
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Extract Section Text
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _extract_section_text(
@@ -835,14 +740,12 @@ class Chunker:
             start:end
         ].strip()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Metadata Assertions
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _assert_metadata(
         chunks: List[DocumentChunk],
-    ) -> None:
+    ):
 
         for chunk in chunks:
 
@@ -858,94 +761,80 @@ class Chunker:
             ):
 
                 raise ValueError(
-                    f"C8 violation "
-                    f"{chunk.chunk_id}"
+                    f"C8 violation: {chunk.chunk_id}"
                 )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # BM25
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _build_bm25_index(
         self,
         chunks: List[DocumentChunk],
         bm25_path: str,
-    ) -> None:
+    ):
 
         if not chunks:
             return
 
-        try:
+        import bm25s
 
-            import bm25s
+        os.makedirs(
+            bm25_path,
+            exist_ok=True,
+        )
 
-            os.makedirs(
-                bm25_path,
-                exist_ok=True,
+        corpus = [
+            c.prefixed_text
+            for c in chunks
+        ]
+
+        retriever = bm25s.BM25()
+
+        tokenized = bm25s.tokenize(
+            corpus,
+            stopwords="en",
+        )
+
+        retriever.index(
+            tokenized
+        )
+
+        retriever.save(
+            bm25_path,
+            corpus=corpus,
+        )
+
+        meta_path = os.path.join(
+            bm25_path,
+            "chunks_meta.json",
+        )
+
+        with open(
+            meta_path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
+            json.dump(
+                [
+                    c.to_dict()
+                    for c in chunks
+                ],
+                f,
+                ensure_ascii=False,
             )
 
-            corpus = [
-                c.prefixed_text
-                for c in chunks
-            ]
+        logger.info(
+            "[N03] BM25 built | chunks=%d",
+            len(chunks),
+        )
 
-            retriever = (
-                bm25s.BM25()
-            )
-
-            retriever.index(
-                bm25s.tokenize(
-                    corpus,
-                    stopwords="en",
-                )
-            )
-
-            retriever.save(
-                bm25_path,
-                corpus=corpus,
-            )
-
-            meta_path = os.path.join(
-                bm25_path,
-                "chunks_meta.json",
-            )
-
-            with open(
-                meta_path,
-                "w",
-                encoding="utf-8",
-            ) as f:
-
-                json.dump(
-                    [
-                        c.to_dict()
-                        for c in chunks
-                    ],
-                    f,
-                    ensure_ascii=False,
-                )
-
-            logger.info(
-                "[N03] BM25 built chunks=%d",
-                len(chunks),
-            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[N03] BM25 build failed: %s",
-                exc,
-            )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # ChromaDB
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _build_chromadb_index(
         self,
         chunks: List[DocumentChunk],
         collection_name: str,
-    ) -> None:
+    ):
 
         if not chunks:
             return
@@ -967,29 +856,6 @@ class Chunker:
 
             return
 
-        chromadb_path = (
-            os.path.normpath(
-                self.chromadb_dir
-            )
-        )
-
-        if (
-            os.path.basename(
-                chromadb_path
-            )
-            == "chromadb"
-        ):
-
-            data_dir = os.path.dirname(
-                chromadb_path
-            ) or "."
-
-        else:
-
-            data_dir = os.path.dirname(
-                chromadb_path
-            ) or "."
-
         try:
 
             from src.retrieval.bge_retriever import (
@@ -997,7 +863,13 @@ class Chunker:
             )
 
             retriever = (
-                BGERetriever()
+                BGERetriever(
+                    data_dir=os.path.dirname(
+                        os.path.normpath(
+                            self.chromadb_dir
+                        )
+                    )
+                )
             )
 
             ok = (
@@ -1007,7 +879,11 @@ class Chunker:
                         for c in chunks
                     ],
                     collection_name=collection_name,
-                    data_dir=data_dir,
+                    data_dir=os.path.dirname(
+                        os.path.normpath(
+                            self.chromadb_dir
+                        )
+                    ),
                 )
             )
 
@@ -1021,20 +897,16 @@ class Chunker:
             else:
 
                 logger.warning(
-                    "[N03] Chroma failed=%s",
-                    collection_name,
+                    "[N03] Chroma build failed"
                 )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.warning(
-                "[N03] Chroma exception: %s",
-                exc,
+            logger.exception(
+                "[N03] Chroma exception"
             )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _sanitize_for_chroma(
@@ -1042,32 +914,24 @@ class Chunker:
         max_len: int = 16,
     ) -> str:
 
-        truncated = value[
-            :max_len
-        ]
-
-        truncated = re.sub(
-            r"[^A-Za-z0-9]+$",
-            "",
-            truncated,
+        value = re.sub(
+            r"[^a-zA-Z0-9]+",
+            "-",
+            value,
         )
 
-        truncated = re.sub(
-            r"^[^A-Za-z0-9]+",
-            "",
-            truncated,
-        )
+        value = value.strip("-")
 
-        if (
-            len(truncated)
-            < 3
-        ):
+        value = value[:max_len]
 
-            truncated = (
-                truncated + "xxx"
-            )[:max_len]
+        if len(value) < 3:
 
-        return truncated
+            value = (
+                value + "xxx"
+            )[:3]
+
+        return value.lower()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Convenience Wrapper
@@ -1080,7 +944,9 @@ def run_chunker(
     chromadb_dir: str = "data/chromadb",
 ):
 
-    return Chunker(
+    chunker = Chunker(
         bm25_dir=bm25_dir,
         chromadb_dir=chromadb_dir,
-    ).run(state)
+    )
+
+    return chunker.run(state)

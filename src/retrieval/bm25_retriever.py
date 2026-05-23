@@ -2,25 +2,16 @@
 src/retrieval/bm25_retriever.py
 
 Production-Grade BM25 Retriever
-FinBench Multi-Agent Business Analyst AI
+Optimized for:
 
-Capabilities
-------------
-1. BM25 keyword retrieval
-2. bm25s compatibility fixes
-3. Tiny-corpus safe retrieval
-4. Fallback lexical scorer
-5. Financial term boosting
-6. Query normalization
-7. Deduplication
-8. LangChain compatibility
-9. Stable ranking
-10. Resource-safe loading
-11. Graceful degradation
-12. Production logging
-13. Retrieval confidence
-14. Manual overlap fallback
-15. Direct search mode
+- Windows
+- Colab
+- FinanceBench
+- Large SEC filings
+- Tiny corpus safety
+- Stable ranking
+- Fast repeated retrieval
+- bm25s compatibility
 """
 
 from __future__ import annotations
@@ -29,8 +20,12 @@ import json
 import logging
 import os
 import re
+
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
 
 from rapidfuzz import fuzz
 
@@ -53,7 +48,17 @@ IMPORTANT_TERMS = [
     "gross profit",
     "cash flow",
     "eps",
+    "guidance",
+    "margin",
+    "earnings",
+    "liabilities",
 ]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Cache
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INDEX_CACHE = {}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utilities
@@ -64,11 +69,17 @@ def normalize_query(
     query: str,
 ) -> str:
 
-    return re.sub(
+    query = (
+        query or ""
+    ).strip().lower()
+
+    query = re.sub(
         r"\s+",
         " ",
-        query.strip().lower(),
+        query,
     )
+
+    return query
 
 
 def deduplicate_results(
@@ -106,19 +117,20 @@ def financial_boost(
     text: str,
 ) -> float:
 
-    t = text.lower()
+    text = text.lower()
 
     boost = 0.0
 
     for term in IMPORTANT_TERMS:
 
-        if term in t:
+        if term in text:
+
             boost += 0.03
 
     return boost
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BM25Retriever
+# BM25 Retriever
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -129,7 +141,10 @@ class BM25Retriever:
         top_k: int = TOP_K,
     ):
 
-        self.top_k = top_k
+        self.top_k = max(
+            1,
+            int(top_k),
+        )
 
         self._retriever = None
 
@@ -137,25 +152,28 @@ class BM25Retriever:
             Dict[str, Any]
         ] = []
 
-        self._lc_retriever = None
+        self._index_path = ""
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # LangGraph Node
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
-    def run(self, state):
+    def run(
+        self,
+        state,
+    ):
 
         index_path = getattr(
             state,
             "bm25_index_path",
             "",
-        )
+        ) or ""
 
         query = getattr(
             state,
             "query",
             "",
-        )
+        ) or ""
 
         if not index_path:
 
@@ -188,7 +206,7 @@ class BM25Retriever:
         if not self._chunks:
 
             logger.warning(
-                "[BM25] Empty chunks"
+                "[BM25] Empty chunk store"
             )
 
             state.bm25_results = []
@@ -213,9 +231,10 @@ class BM25Retriever:
 
         state.bm25_confidence = (
             float(
-                results[0][
-                    "bm25_score_norm"
-                ]
+                results[0].get(
+                    "bm25_score_norm",
+                    0.0,
+                )
             )
             if results
             else 0.0
@@ -223,20 +242,50 @@ class BM25Retriever:
 
         logger.info(
             "[BM25] query='%s' results=%d",
-            query[:50],
+            query[:80],
             len(results),
         )
 
         return state
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Load Index
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _load_index(
         self,
         index_path: str,
     ) -> None:
+
+        if (
+            self._index_path
+            == index_path
+            and self._retriever
+            is not None
+            and self._chunks
+        ):
+
+            return
+
+        if index_path in _INDEX_CACHE:
+
+            cached = _INDEX_CACHE[
+                index_path
+            ]
+
+            self._retriever = cached[
+                "retriever"
+            ]
+
+            self._chunks = cached[
+                "chunks"
+            ]
+
+            self._index_path = (
+                index_path
+            )
+
+            return
 
         import bm25s
 
@@ -256,23 +305,25 @@ class BM25Retriever:
                 index_dir,
             )
 
-            self._chunks = []
-
             self._retriever = None
+
+            self._chunks = []
 
             return
 
         if not meta_path.exists():
 
             logger.warning(
-                "[BM25] chunks_meta.json missing"
+                "[BM25] Metadata missing"
             )
-
-            self._chunks = []
 
             self._retriever = None
 
+            self._chunks = []
+
             return
+
+        # Metadata
 
         try:
 
@@ -282,22 +333,23 @@ class BM25Retriever:
                 encoding="utf-8",
             ) as f:
 
-                self._chunks = json.load(
-                    f
+                self._chunks = (
+                    json.load(f)
                 )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.error(
-                "[BM25] Meta load failed: %s",
-                exc,
+            logger.exception(
+                "[BM25] Failed loading metadata"
             )
-
-            self._chunks = []
 
             self._retriever = None
 
+            self._chunks = []
+
             return
+
+        # BM25
 
         try:
 
@@ -308,25 +360,35 @@ class BM25Retriever:
                 )
             )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.error(
-                "[BM25] BM25 load failed: %s",
-                exc,
+            logger.exception(
+                "[BM25] Failed loading BM25"
             )
 
             self._retriever = None
 
             return
 
+        self._index_path = (
+            index_path
+        )
+
+        _INDEX_CACHE[
+            index_path
+        ] = {
+            "retriever": self._retriever,
+            "chunks": self._chunks,
+        }
+
         logger.info(
-            "[BM25] Loaded index chunks=%d",
+            "[BM25] Loaded index | chunks=%d",
             len(self._chunks),
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Search
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _search(
         self,
@@ -339,6 +401,7 @@ class BM25Retriever:
             self._retriever is None
             or not self._chunks
         ):
+
             return []
 
         query = normalize_query(
@@ -379,24 +442,22 @@ class BM25Retriever:
                 )
             )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.error(
-                "[BM25] Tokenize failed: %s",
-                exc,
+            logger.exception(
+                "[BM25] Tokenization failed"
             )
 
-            return []
+            return self._fallback_score_all(
+                query
+            )
 
         safe_k = min(
-            self.top_k,
+            max(2, self.top_k),
             n_chunks,
         )
 
-        if safe_k < 2:
-            safe_k = 2
-
-        # Main retrieve
+        # Main Retrieval
 
         try:
 
@@ -407,16 +468,17 @@ class BM25Retriever:
                 )
             )
 
-        except Exception as exc:
+        except Exception:
 
-            logger.debug(
-                "[BM25] retrieve failed -> fallback: %s",
-                exc,
+            logger.exception(
+                "[BM25] retrieve failed"
             )
 
             return self._fallback_score_all(
                 query
             )
+
+        # Normalize weird bm25s formats
 
         try:
 
@@ -473,12 +535,12 @@ class BM25Retriever:
             if chunk is None:
                 continue
 
-            score_f = float(score)
-
             text = chunk.get(
                 "text",
                 "",
             )
+
+            score_f = float(score)
 
             fuzzy = (
                 fuzz.partial_ratio(
@@ -522,19 +584,20 @@ class BM25Retriever:
             reverse=True,
         )
 
-        for i, r in enumerate(
+        for idx, item in enumerate(
             output,
             start=1,
         ):
-            r["rank"] = i
+
+            item["rank"] = idx
 
         return output[
             : self.top_k
         ]
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Fallback
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Fallback Retrieval
+    # ─────────────────────────────────────────────────────────────────────
 
     def _fallback_score_all(
         self,
@@ -544,8 +607,12 @@ class BM25Retriever:
         if not self._chunks:
             return []
 
+        query = normalize_query(
+            query
+        )
+
         q_terms = set(
-            query.lower().split()
+            query.split()
         )
 
         if not q_terms:
@@ -565,17 +632,18 @@ class BM25Retriever:
                 .lower()
             )
 
-            t_terms = set(
+            text_terms = set(
                 text.split()
             )
 
             overlap = len(
-                q_terms & t_terms
+                q_terms
+                & text_terms
             )
 
             fuzzy = (
                 fuzz.partial_ratio(
-                    query.lower(),
+                    query,
                     text,
                 ) / 100.0
             )
@@ -607,8 +675,9 @@ class BM25Retriever:
             reverse=True,
         )
 
-        max_score = float(
-            scored[0][0]
+        max_score = max(
+            float(s[0])
+            for s in scored
         )
 
         if max_score <= 0:
@@ -635,7 +704,7 @@ class BM25Retriever:
                         6,
                     ),
                     "bm25_score_norm": round(
-                        score
+                        float(score)
                         / max_score,
                         6,
                     ),
@@ -646,9 +715,9 @@ class BM25Retriever:
 
         return output
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Resolve
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Chunk Resolution
+    # ─────────────────────────────────────────────────────────────────────
 
     def _resolve_chunk(
         self,
@@ -670,18 +739,21 @@ class BM25Retriever:
                 "",
             )
 
-            chunk = (
-                self._find_chunk_meta(
-                    chunk_id
+            if chunk_id:
+
+                chunk = (
+                    self._find_chunk(
+                        chunk_id
+                    )
                 )
-                if chunk_id
-                else None
-            )
 
-            if chunk is not None:
-                return chunk
+                if chunk:
+                    return chunk
 
-            if rank < n_chunks:
+            if (
+                0 <= rank < n_chunks
+            ):
+
                 return self._chunks[
                     rank
                 ]
@@ -695,6 +767,7 @@ class BM25Retriever:
             if (
                 0 <= idx < n_chunks
             ):
+
                 return self._chunks[
                     idx
                 ]
@@ -702,23 +775,24 @@ class BM25Retriever:
         except Exception:
             pass
 
-        chunk_id = str(item)
-
-        chunk = self._find_chunk_meta(
-            chunk_id
+        chunk = self._find_chunk(
+            str(item)
         )
 
-        if chunk is not None:
+        if chunk:
             return chunk
 
-        if rank < n_chunks:
+        if (
+            0 <= rank < n_chunks
+        ):
+
             return self._chunks[
                 rank
             ]
 
         return None
 
-    def _find_chunk_meta(
+    def _find_chunk(
         self,
         chunk_id: str,
     ) -> Optional[Dict]:
@@ -734,32 +808,41 @@ class BM25Retriever:
                 )
                 == chunk_id
             ):
+
                 return chunk
 
         return None
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # LangChain
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def as_langchain_retriever(
         self,
         index_path: str,
     ):
 
-        from langchain_core.documents import (
-            Document,
-        )
+        try:
 
-        from langchain_community.retrievers import (
-            BM25Retriever as LCBM25,
-        )
-
-        if not self._chunks:
-
-            self._load_index(
-                index_path
+            from langchain_core.documents import (
+                Document,
             )
+
+            from langchain_community.retrievers import (
+                BM25Retriever as LCBM25,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "[BM25] LangChain unavailable"
+            )
+
+            return None
+
+        self._load_index(
+            index_path
+        )
 
         if not self._chunks:
             return None
@@ -805,22 +888,16 @@ class BM25Retriever:
                 )
             )
 
-        retriever = (
+        return (
             LCBM25.from_documents(
                 docs,
                 k=self.top_k,
             )
         )
 
-        self._lc_retriever = (
-            retriever
-        )
-
-        return retriever
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Utilities
+    # ─────────────────────────────────────────────────────────────────────
 
     def get_chunk_count(
         self,
@@ -837,7 +914,7 @@ class BM25Retriever:
         return (
             self._retriever
             is not None
-            and len(self._chunks) > 0
+            and bool(self._chunks)
         )
 
     def search_direct(
@@ -847,11 +924,14 @@ class BM25Retriever:
         top_k: int = 10,
     ) -> List[Dict]:
 
+        self.top_k = max(
+            1,
+            int(top_k),
+        )
+
         self._load_index(
             index_path
         )
-
-        self.top_k = top_k
 
         return self._search(
             query

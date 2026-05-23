@@ -1,38 +1,59 @@
 """
 src/retrieval/bge_retriever.py
 
-Production-Grade BGE-M3 Semantic Retriever
+Production-Grade BGE Semantic Retriever
+Optimized for:
+
+- Windows
+- Colab
+- T4 GPUs
+- Ollama coexistence
+- Low VRAM
+- ChromaDB stability
+- FinanceBench scale
 """
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import re
-from typing import Dict, List
+from typing import Dict
+from typing import List
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENV SAFETY
+# ─────────────────────────────────────────────────────────────────────────────
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
+os.environ["CHROMADB_TELEMETRY"] = "False"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lazy Globals
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ST_MODEL = None
+_ST = None
 _CHROMADB = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "BAAI/bge-m3"
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 DEFAULT_TOP_K = 10
 
-MIN_SIMILARITY = 0.0
+MIN_SIMILARITY = 0.05
 
-RETRIEVER_LABEL = "bge_m3"
+RETRIEVER_LABEL = "bge"
 
-_BATCH_SIZE = 32
+_BATCH_SIZE = 16
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lazy Imports
@@ -41,15 +62,15 @@ _BATCH_SIZE = 32
 
 def get_sentence_transformers():
 
-    global _ST_MODEL
+    global _ST
 
-    if _ST_MODEL is None:
+    if _ST is None:
 
         import sentence_transformers
 
-        _ST_MODEL = sentence_transformers
+        _ST = sentence_transformers
 
-    return _ST_MODEL
+    return _ST
 
 
 def get_chromadb():
@@ -66,7 +87,7 @@ def get_chromadb():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Utilities
+# Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -87,7 +108,7 @@ def deduplicate_results(
 
     seen = set()
 
-    unique = []
+    final = []
 
     for item in results:
 
@@ -107,13 +128,31 @@ def deduplicate_results(
 
         seen.add(key)
 
-        unique.append(item)
+        final.append(item)
 
-    return unique
+    return final
+
+
+def cleanup_gpu():
+
+    try:
+
+        import torch
+
+        if torch.cuda.is_available():
+
+            torch.cuda.empty_cache()
+
+            torch.cuda.ipc_collect()
+
+    except Exception:
+        pass
+
+    gc.collect()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BGERetriever
+# Retriever
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -136,11 +175,13 @@ class BGERetriever:
 
         self._disabled = bool(
             os.environ.get(
-                "DISABLE_BGE"
+                "DISABLE_BGE",
+                "",
             )
         ) or bool(
             os.environ.get(
-                "DISABLE_CHROMADB"
+                "DISABLE_CHROMADB",
+                "",
             )
         )
 
@@ -162,7 +203,7 @@ class BGERetriever:
 
         if not query or not collection:
 
-            state.retrieval_stage_1 = []
+            state.bge_results = []
 
             return state
 
@@ -172,8 +213,6 @@ class BGERetriever:
             data_dir=self.data_dir,
             top_k=self.top_k,
         )
-
-        state.retrieval_stage_1 = results
 
         state.bge_results = results
 
@@ -203,6 +242,12 @@ class BGERetriever:
             )
 
             if collection is None:
+
+                logger.warning(
+                    "[BGE] Collection missing: %s",
+                    collection_name,
+                )
+
                 return []
 
             model = self._load_model()
@@ -212,10 +257,10 @@ class BGERetriever:
             )
 
             embedding = model.encode(
-                f"Represent this sentence for searching relevant passages: {query}",
+                [query],
                 normalize_embeddings=True,
                 show_progress_bar=False,
-            ).tolist()
+            )[0].tolist()
 
             results = collection.query(
                 query_embeddings=[
@@ -223,7 +268,10 @@ class BGERetriever:
                 ],
                 n_results=min(
                     top_k,
-                    collection.count(),
+                    max(
+                        1,
+                        collection.count(),
+                    ),
                 ),
                 include=[
                     "documents",
@@ -243,10 +291,8 @@ class BGERetriever:
 
         except Exception as exc:
 
-            logger.error(
-                "[BGE] Retrieval failed: %s",
-                exc,
-                exc_info=True,
+            logger.exception(
+                "[BGE] Retrieval failed"
             )
 
             return []
@@ -307,34 +353,35 @@ class BGERetriever:
                 )
             ]
 
-            metadata = [
+            metadatas = [
                 self._build_metadata(c)
                 for c in chunks
             ]
 
-            for i in range(
+            total = len(texts)
+
+            for start in range(
                 0,
-                len(texts),
+                total,
                 _BATCH_SIZE,
             ):
 
+                end = start + _BATCH_SIZE
+
                 batch_texts = texts[
-                    i:i + _BATCH_SIZE
+                    start:end
                 ]
 
                 batch_ids = ids[
-                    i:i + _BATCH_SIZE
+                    start:end
                 ]
 
-                batch_meta = metadata[
-                    i:i + _BATCH_SIZE
+                batch_meta = metadatas[
+                    start:end
                 ]
 
                 embeddings = model.encode(
-                    [
-                        f"passage: {t}"
-                        for t in batch_texts
-                    ],
+                    batch_texts,
                     batch_size=_BATCH_SIZE,
                     normalize_embeddings=True,
                     show_progress_bar=False,
@@ -347,15 +394,23 @@ class BGERetriever:
                     metadatas=batch_meta,
                 )
 
+            cleanup_gpu()
+
+            logger.info(
+                "[BGE] Collection built: %s | chunks=%d",
+                collection_name,
+                len(chunks),
+            )
+
             return True
 
-        except Exception as exc:
+        except Exception:
 
-            logger.error(
-                "[BGE] Build failed: %s",
-                exc,
-                exc_info=True,
+            logger.exception(
+                "[BGE] Build failed"
             )
+
+            cleanup_gpu()
 
             return False
 
@@ -370,18 +425,11 @@ class BGERetriever:
             get_sentence_transformers()
         )
 
+        # IMPORTANT:
+        # Keep CPU only.
+        # Ollama already owns GPU VRAM.
+
         device = "cpu"
-
-        try:
-
-            import torch
-
-            if torch.cuda.is_available():
-
-                device = "cuda"
-
-        except Exception:
-            pass
 
         logger.info(
             "[BGE] Loading model on %s",
@@ -430,7 +478,7 @@ class BGERetriever:
         self,
         collection_name: str,
         data_dir: str,
-    ):
+    ) -> Optional[object]:
 
         try:
 
@@ -443,6 +491,10 @@ class BGERetriever:
             )
 
         except Exception:
+
+            logger.exception(
+                "[BGE] Failed loading collection"
+            )
 
             return None
 

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Environment
+# ─────────────────────────────────────────────────────────────────────────────
+
 import os
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -8,18 +12,22 @@ os.environ["CHROMADB_TELEMETRY"] = "False"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import chromadb
+# Disable GPU embedding contention with Ollama
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Imports
+# ─────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import gc
 import json
 import logging
-import os
 import re
 import sys
 import time
 
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -34,13 +42,9 @@ from src.pipeline.pipeline import (
     FinBenchPipeline,
 )
 
-from src.utils.runtime_cache import (
-    RuntimeCache,
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Logging
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -53,9 +57,9 @@ logger = logging.getLogger(
 
 logger.setLevel(logging.INFO)
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Dataset Paths
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 FB_ROOT = (
     ROOT
@@ -76,20 +80,24 @@ FB_METADATA = (
 )
 
 FB_PDFS_DIR = (
-    FB_ROOT / "pdfs"
+    FB_ROOT
+    / "pdfs"
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Results Directory
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 if os.path.exists(
     "/content/drive/MyDrive"
 ):
+
     RESULTS_DIR = Path(
         "/content/drive/MyDrive/finbench_results"
     )
+
 else:
+
     RESULTS_DIR = (
         ROOT
         / "eval"
@@ -101,9 +109,9 @@ RESULTS_DIR.mkdir(
     exist_ok=True,
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Validation
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def validate_financebench():
@@ -122,16 +130,23 @@ def validate_financebench():
 
     if missing:
 
-        print("\n" + "=" * 80)
-        print("❌ FINANCEBENCH DATASET MISSING")
+        print()
         print("=" * 80)
-
+        print(
+            "❌ FINANCEBENCH DATASET MISSING"
+        )
+        print("=" * 80)
         print()
 
         for item in missing:
+
             print(f" - {item}")
 
         print()
+
+        print(
+            "Clone using:"
+        )
 
         print(
             "git clone "
@@ -147,12 +162,14 @@ def validate_financebench():
         "FinanceBench dataset validated"
     )
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-def normalize_number(text: str):
+def normalize_number(
+    text: str,
+):
 
     if not text:
         return ""
@@ -190,6 +207,7 @@ def normalize_number(text: str):
         )
 
     except Exception:
+
         return ""
 
 
@@ -199,8 +217,13 @@ def numbers_match(
     tolerance: float = 0.02,
 ):
 
-    p = normalize_number(predicted)
-    g = normalize_number(gold)
+    p = normalize_number(
+        predicted
+    )
+
+    g = normalize_number(
+        gold
+    )
 
     if not p or not g:
         return False
@@ -208,16 +231,20 @@ def numbers_match(
     try:
 
         pf = float(p)
+
         gf = float(g)
 
         if abs(gf) < 1e-9:
+
             return abs(pf) < 1e-3
 
         return (
-            abs(pf - gf) / abs(gf)
+            abs(pf - gf)
+            / abs(gf)
         ) < tolerance
 
     except Exception:
+
         return False
 
 
@@ -252,7 +279,12 @@ def is_correct(
 ):
 
     if not predicted:
-        return False, "empty", 0.0
+
+        return (
+            False,
+            "empty",
+            0.0,
+        )
 
     pred_num = normalize_number(
         predicted
@@ -268,14 +300,24 @@ def is_correct(
             pred_num,
             gold_num,
         ):
-            return True, "numeric", 1.0
+
+            return (
+                True,
+                "numeric",
+                1.0,
+            )
 
         if numbers_match(
             pred_num,
             gold_num,
             tolerance=0.05,
         ):
-            return True, "numeric_loose", 0.95
+
+            return (
+                True,
+                "numeric_loose",
+                0.95,
+            )
 
     overlap = overlap_score(
         predicted,
@@ -283,16 +325,30 @@ def is_correct(
     )
 
     if overlap >= 0.50:
-        return True, "narrative", overlap
+
+        return (
+            True,
+            "narrative",
+            overlap,
+        )
 
     if overlap >= 0.30:
-        return True, "partial", overlap
 
-    return False, "wrong", overlap
+        return (
+            True,
+            "partial",
+            overlap,
+        )
 
-# ──────────────────────────────────────────────────────────────────────────────
+    return (
+        False,
+        "wrong",
+        overlap,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Load Questions
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def load_questions(
@@ -309,6 +365,7 @@ def load_questions(
     ) as f:
 
         for line in f:
+
             questions.append(
                 json.loads(line)
             )
@@ -321,6 +378,7 @@ def load_questions(
     ) as f:
 
         for line in f:
+
             metadata.append(
                 json.loads(line)
             )
@@ -361,13 +419,16 @@ def load_questions(
         )
 
     if limit > 0:
-        questions = questions[:limit]
+
+        questions = questions[
+            :limit
+        ]
 
     return questions
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Eval
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def run_eval(args):
@@ -379,7 +440,10 @@ def run_eval(args):
     by_doc = defaultdict(list)
 
     for q in questions:
-        by_doc[q["doc_name"]].append(q)
+
+        by_doc[
+            q["doc_name"]
+        ].append(q)
 
     logger.info(
         "Documents: %d",
@@ -388,14 +452,17 @@ def run_eval(args):
 
     results = []
 
-    pipeline_cache = {}
-
     output_path = (
         RESULTS_DIR
-        / f"financebench_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        / (
+            "financebench_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
     )
 
-    partial_path = str(output_path).replace(
+    partial_path = str(
+        output_path
+    ).replace(
         ".json",
         "_partial.json",
     )
@@ -445,49 +512,32 @@ def run_eval(args):
 
         try:
 
-            if pdf_path in pipeline_cache:
+            ingest_start = time.time()
 
-                pipeline, state = (
-                    pipeline_cache[pdf_path]
-                )
+            pipeline = FinBenchPipeline()
 
-                logger.info(
-                    "Using cached ingest"
-                )
+            state = pipeline.ingest(
+                document_path=pdf_path,
+                session_id=f"fb-{idx}",
+                company_name=company,
+                doc_type="10-K",
+                fiscal_year=fiscal_year,
+            )
 
-            else:
+            ingest_elapsed = (
+                time.time()
+                - ingest_start
+            )
 
-                pipeline = FinBenchPipeline()
-
-                ingest_start = time.time()
-
-                state = pipeline.ingest(
-                    document_path=pdf_path,
-                    session_id=f"fb-{idx}",
-                    company_name=company,
-                    doc_type="10-K",
-                    fiscal_year=fiscal_year,
-                )
-
-                ingest_elapsed = (
-                    time.time()
-                    - ingest_start
-                )
-
-                logger.info(
-                    "Ingest %.1fs | chunks=%d",
-                    ingest_elapsed,
-                    getattr(
-                        state,
-                        "chunk_count",
-                        0,
-                    ),
-                )
-
-                pipeline_cache[pdf_path] = (
-                    pipeline,
+            logger.info(
+                "Ingest %.1fs | chunks=%d",
+                ingest_elapsed,
+                getattr(
                     state,
-                )
+                    "chunk_count",
+                    0,
+                ),
+            )
 
         except Exception as exc:
 
@@ -501,9 +551,9 @@ def run_eval(args):
 
             continue
 
-        # ──────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────
         # Questions
-        # ──────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────
 
         for q in q_list:
 
@@ -511,9 +561,11 @@ def run_eval(args):
 
             try:
 
-                result_state = pipeline.query(
-                    state,
-                    q["question"],
+                result_state = (
+                    pipeline.query(
+                        state,
+                        q["question"],
+                    )
                 )
 
                 elapsed = (
@@ -550,11 +602,13 @@ def run_eval(args):
                         ],
                         "question": q[
                             "question"
-                        ][:200],
+                        ][:300],
                         "gold": q[
                             "gold_answer"
-                        ][:200],
-                        "predicted": pred[:400],
+                        ][:300],
+                        "predicted": pred[
+                            :1000
+                        ],
                         "correct": correct,
                         "match_type": match_type,
                         "score": round(
@@ -577,10 +631,10 @@ def run_eval(args):
 
                 print(
                     f"{mark} "
-                    f"{elapsed:>5.1f}s "
+                    f"{elapsed:>6.1f}s "
                     f"{match_type:<18} "
-                    f"{pod:<18} "
-                    f"{pred[:70]}"
+                    f"{pod:<20} "
+                    f"{pred[:80]}"
                 )
 
             except Exception as exc:
@@ -596,10 +650,10 @@ def run_eval(args):
                         ],
                         "question": q[
                             "question"
-                        ][:200],
+                        ][:300],
                         "gold": q[
                             "gold_answer"
-                        ][:200],
+                        ][:300],
                         "predicted": "",
                         "correct": False,
                         "match_type": "exception",
@@ -607,7 +661,7 @@ def run_eval(args):
                     }
                 )
 
-            # autosave
+            # Autosave
 
             with open(
                 partial_path,
@@ -621,10 +675,24 @@ def run_eval(args):
                     indent=2,
                 )
 
+        # Cleanup between docs
+
         gc.collect()
 
+        try:
+
+            import torch
+
+            if torch.cuda.is_available():
+
+                torch.cuda.empty_cache()
+
+        except Exception:
+            pass
+
     total_elapsed = (
-        time.time() - total_start
+        time.time()
+        - total_start
     )
 
     with open(
@@ -642,7 +710,10 @@ def run_eval(args):
     if os.path.exists(
         partial_path
     ):
-        os.remove(partial_path)
+
+        os.remove(
+            partial_path
+        )
 
     print()
     print("=" * 80)
@@ -656,9 +727,9 @@ def run_eval(args):
 
     return results
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def write_summary(
@@ -681,7 +752,10 @@ def write_summary(
 
     summary_path = (
         output_dir
-        / f"financebench_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        / (
+            "financebench_summary_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        )
     )
 
     lines = [
@@ -700,9 +774,9 @@ def write_summary(
     print()
     print(summary_path)
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -724,7 +798,9 @@ def main():
     args = parser.parse_args()
 
     print("=" * 80)
-    print("🚀 FULL FINANCEBENCH EVAL")
+    print(
+        "🚀 FULL FINANCEBENCH EVAL"
+    )
     print("=" * 80)
 
     print(

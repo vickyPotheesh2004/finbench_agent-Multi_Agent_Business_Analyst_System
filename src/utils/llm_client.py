@@ -2,25 +2,16 @@
 src/utils/llm_client.py
 
 Production-Grade Local LLM Client
-FinBench Multi-Agent Business Analyst AI
+Optimized for:
 
-Capabilities
-------------
-1. Fully local Ollama inference
-2. Zero external network calls
-3. Circuit breaker protection
-4. Fast-fail availability cache
-5. Automatic retries
-6. Timeout hardening
-7. JSON-safe generation
-8. Deterministic seed support
-9. Production health checks
-10. Structured telemetry
-11. Thread-safe singleton
-12. Context-first validation
-13. Streaming-safe architecture
-14. Resource-safe HTTP handling
-15. Production-grade logging
+- Ollama
+- Llama 3.1
+- Windows
+- Colab
+- T4 GPUs
+- FinanceBench
+- Long-running evaluation
+- Stability under load
 """
 
 from __future__ import annotations
@@ -31,7 +22,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+
+from typing import Any
+from typing import Dict
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,38 +39,45 @@ FALLBACK_MODEL = "llama3.1:8b"
 
 BASE_URL = "http://localhost:11434"
 
-DEFAULT_TIMEOUT = 30
+# Increased for FinanceBench
+DEFAULT_TIMEOUT = 180
 
 DEFAULT_TEMP = 0.1
 
-MAX_RETRIES = 1
+MAX_RETRIES = 3
 
-RETRY_DELAY = 1.0
+RETRY_DELAY = 2.0
 
 SEED = 42
 
 AVAILABILITY_CACHE_TTL = 30.0
 
-CIRCUIT_RESET_SECONDS = 30.0
+CIRCUIT_RESET_SECONDS = 60.0
 
-HEALTH_TIMEOUT = 3
+HEALTH_TIMEOUT = 5
 
 MAX_PROMPT_CHARS = 120_000
 
+MAX_RESPONSE_CHARS = 40_000
+
+KEEP_ALIVE = "1h"
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Gemma4Client
+# Ollama Client
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class Gemma4Client:
 
     """
-    Local Ollama wrapper.
+    Local Ollama client.
 
-    Constraints
-    -----------
-    - Localhost only
-    - No cloud APIs
+    Features:
+    - Thread-safe
+    - Retry hardened
+    - Circuit breaker
+    - Long-context safe
+    - JSON-safe
     - Deterministic inference
     """
 
@@ -88,14 +89,16 @@ class Gemma4Client:
         seed: int = SEED,
     ) -> None:
 
-        self.model = model.strip()
+        self.model = (
+            model.strip()
+        )
 
         self.base_url = (
             base_url.rstrip("/")
         )
 
         self.timeout = max(
-            5,
+            30,
             int(timeout),
         )
 
@@ -133,9 +136,9 @@ class Gemma4Client:
 
         self._lock = threading.Lock()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Primary API
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────
 
     def chat(
         self,
@@ -172,6 +175,8 @@ class Gemma4Client:
 
         t0 = time.time()
 
+        last_error = None
+
         for attempt in range(
             1,
             MAX_RETRIES + 1,
@@ -200,6 +205,8 @@ class Gemma4Client:
 
             except Exception as exc:
 
+                last_error = exc
+
                 logger.warning(
                     "[LLM] attempt=%d failed: %s",
                     attempt,
@@ -220,11 +227,16 @@ class Gemma4Client:
 
         self._register_failure()
 
+        logger.error(
+            "[LLM] Failed after retries: %s",
+            last_error,
+        )
+
         return ""
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # JSON API
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def chat_json(
         self,
@@ -250,6 +262,12 @@ class Gemma4Client:
             )
         )
 
+        cleaned = (
+            cleaned.strip()
+        )
+
+        # Try direct parse
+
         try:
 
             parsed = json.loads(
@@ -266,19 +284,50 @@ class Gemma4Client:
                 "data": parsed
             }
 
-        except json.JSONDecodeError:
+        except Exception:
+            pass
 
-            logger.debug(
-                "[LLM] Invalid JSON response"
-            )
+        # Try extraction parse
 
-            return {
-                "raw_text": raw
-            }
+        try:
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Health
-    # ─────────────────────────────────────────────────────────────────────────
+            start = cleaned.find("{")
+
+            end = cleaned.rfind("}")
+
+            if (
+                start >= 0
+                and end > start
+            ):
+
+                extracted = cleaned[
+                    start:end + 1
+                ]
+
+                parsed = json.loads(
+                    extracted
+                )
+
+                if isinstance(
+                    parsed,
+                    dict,
+                ):
+                    return parsed
+
+        except Exception:
+            pass
+
+        logger.debug(
+            "[LLM] Invalid JSON response"
+        )
+
+        return {
+            "raw_text": raw
+        }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Availability
+    # ─────────────────────────────────────────────────────────────────────
 
     def is_available(
         self,
@@ -363,13 +412,13 @@ class Gemma4Client:
 
             return False
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Health
+    # ─────────────────────────────────────────────────────────────────────
+
     def health_check(
         self,
     ) -> Dict[str, Any]:
-
-        available = (
-            self.is_available()
-        )
 
         total_calls = max(
             1,
@@ -378,8 +427,7 @@ class Gemma4Client:
 
         return {
             "model": self.model,
-            "base_url": self.base_url,
-            "available": available,
+            "available": self.is_available(),
             "circuit_open": self._circuit_open,
             "total_calls": self._total_calls,
             "total_failures": self._total_failures,
@@ -414,9 +462,9 @@ class Gemma4Client:
             "[LLM] Circuit reset"
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Internal HTTP
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Ollama HTTP
+    # ─────────────────────────────────────────────────────────────────────
 
     def _call_ollama(
         self,
@@ -444,26 +492,27 @@ class Gemma4Client:
             }
         )
 
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "temperature": float(
-                        temperature
-                    ),
-                    "num_predict": int(
-                        max_tokens
-                    ),
-                    "seed": self.seed,
-                },
-            }
-        ).encode("utf-8")
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": KEEP_ALIVE,
+            "options": {
+                "temperature": float(
+                    temperature
+                ),
+                "num_predict": int(
+                    max_tokens
+                ),
+                "seed": self.seed,
+            },
+        }
 
         request = urllib.request.Request(
             url=f"{self.base_url}/api/chat",
-            data=payload,
+            data=json.dumps(
+                payload
+            ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json"
             },
@@ -501,6 +550,12 @@ class Gemma4Client:
                 f"URLError {exc.reason}"
             ) from exc
 
+        except Exception as exc:
+
+            raise RuntimeError(
+                f"Ollama request failed: {exc}"
+            ) from exc
+
         content = (
             data.get(
                 "message",
@@ -511,11 +566,26 @@ class Gemma4Client:
             )
         )
 
-        return str(content)
+        if not isinstance(
+            content,
+            str,
+        ):
+            content = str(content)
 
-    # ─────────────────────────────────────────────────────────────────────────
+        if (
+            len(content)
+            > MAX_RESPONSE_CHARS
+        ):
+
+            content = content[
+                :MAX_RESPONSE_CHARS
+            ]
+
+        return content.strip()
+
+    # ─────────────────────────────────────────────────────────────────────
     # Helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _sanitize_prompt(
         self,
@@ -645,7 +715,7 @@ _default_client: Optional[
 _client_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public Helpers
+# Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
 

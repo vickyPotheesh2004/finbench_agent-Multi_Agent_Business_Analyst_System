@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from src.state.ba_state import BAState
@@ -102,6 +101,25 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Query Type Mapping
+# ──────────────────────────────────────────────────────────────────────────────
+
+QUERY_TYPE_MAP = {
+    "numeric": "numerical",
+    "narrative": "text",
+    "qualitative": "text",
+    "comparison": "multi_doc",
+}
+
+VALID_QUERY_TYPES = {
+    "numerical",
+    "ratio",
+    "multi_doc",
+    "text",
+    "forensic",
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Retrieval Wrappers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -121,6 +139,7 @@ def _run_sniper_node(state):
         state.sniper_hit = False
         state.sniper_confidence = 0.0
         state.sniper_answer = ""
+        state.sniper_result = None
 
         return state
 
@@ -151,14 +170,14 @@ def _run_sniper_node(state):
 
     except Exception as exc:
 
-        logger.warning(
-            "[SNIPER] Failed: %s",
-            exc,
+        logger.exception(
+            "[SNIPER] Failed"
         )
 
         state.sniper_hit = False
         state.sniper_confidence = 0.0
         state.sniper_answer = ""
+        state.sniper_result = None
 
     return state
 
@@ -171,18 +190,13 @@ def _run_bm25_node(state):
 
         return retriever.run(state)
 
-    except Exception as exc:
+    except Exception:
 
-        logger.warning(
-            "[BM25] Failed: %s",
-            exc,
+        logger.exception(
+            "[BM25] Failed"
         )
 
-        if not hasattr(
-            state,
-            "bm25_results",
-        ):
-            state.bm25_results = []
+        state.bm25_results = []
 
         return state
 
@@ -196,8 +210,9 @@ class FinBenchPipeline:
 
     def __init__(self):
 
+        # Windows + Ollama + BGE stability
         self.parallel = ParallelExecutor(
-            max_workers=2
+            max_workers=1
         )
 
         self.llm_client = None
@@ -210,11 +225,10 @@ class FinBenchPipeline:
                     get_llm_client()
                 )
 
-            except Exception as exc:
+            except Exception:
 
-                logger.warning(
-                    "[PIPELINE] LLM unavailable: %s",
-                    exc,
+                logger.exception(
+                    "[PIPELINE] LLM unavailable"
                 )
 
         logger.info(
@@ -312,19 +326,64 @@ class FinBenchPipeline:
     ) -> BAState:
 
         if state is None:
+
             raise ValueError(
                 "state is None"
             )
 
         state.query = question
 
-        state.query_type = classify_query(
+        # Safe defaults
+
+        state.bm25_results = getattr(
+            state,
+            "bm25_results",
+            [],
+        ) or []
+
+        state.bge_results = getattr(
+            state,
+            "bge_results",
+            [],
+        ) or []
+
+        state.retrieval_stage_1 = getattr(
+            state,
+            "retrieval_stage_1",
+            [],
+        ) or []
+
+        state.reranked_chunks = getattr(
+            state,
+            "reranked_chunks",
+            [],
+        ) or []
+
+        # Query type normalization
+
+        query_type = classify_query(
             question
         )
 
+        query_type = QUERY_TYPE_MAP.get(
+            query_type,
+            query_type,
+        )
+
+        if query_type not in VALID_QUERY_TYPES:
+
+            logger.warning(
+                "[PIPELINE] Invalid query type: %s",
+                query_type,
+            )
+
+            query_type = "text"
+
+        state.query_type = query_type
+
         logger.info(
             "[PIPELINE] Query: %s",
-            question[:100],
+            question[:120],
         )
 
         # ──────────────────────────────────────────────────────────────────────
@@ -407,7 +466,7 @@ class FinBenchPipeline:
             return state
 
         # ──────────────────────────────────────────────────────────────────────
-        # Parallel Retrieval
+        # Retrieval
         # ──────────────────────────────────────────────────────────────────────
 
         def _bm25():
@@ -424,24 +483,51 @@ class FinBenchPipeline:
                 state,
             )
 
-        bm25_state, bge_state = (
-            self.parallel.run(
-                _bm25,
-                _bge,
+        try:
+
+            bm25_state, bge_state = (
+                self.parallel.run(
+                    _bm25,
+                    _bge,
+                )
             )
-        )
+
+        except Exception:
+
+            logger.exception(
+                "[PIPELINE] Parallel retrieval failed"
+            )
+
+            bm25_state = state
+            bge_state = state
 
         state.bm25_results = getattr(
             bm25_state,
             "bm25_results",
             [],
-        )
+        ) or []
 
         state.bge_results = getattr(
             bge_state,
             "bge_results",
             [],
-        )
+        ) or []
+
+        if not isinstance(
+            state.bm25_results,
+            list,
+        ):
+            state.bm25_results = []
+
+        if not isinstance(
+            state.bge_results,
+            list,
+        ):
+            state.bge_results = []
+
+        # ──────────────────────────────────────────────────────────────────────
+        # RRF
+        # ──────────────────────────────────────────────────────────────────────
 
         state = _safe_run(
             "N09 RRF",
@@ -613,18 +699,22 @@ def _safe_run(
 
         result = fn(state)
 
-        return (
-            result
-            if result is not None
-            else state
-        )
+        if result is None:
 
-    except Exception as exc:
+            logger.warning(
+                "[%s] Returned None",
+                label,
+            )
 
-        logger.error(
-            "[%s] Failed: %s",
+            return state
+
+        return result
+
+    except Exception:
+
+        logger.exception(
+            "[%s] Failed",
             label,
-            exc,
         )
 
         return state
