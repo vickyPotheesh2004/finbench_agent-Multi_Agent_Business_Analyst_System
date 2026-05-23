@@ -2,25 +2,6 @@
 src/retrieval/bge_retriever.py
 
 Production-Grade BGE-M3 Semantic Retriever
-FinBench Multi-Agent Business Analyst AI
-
-Capabilities
-------------
-1. BGE-M3 semantic retrieval
-2. ChromaDB persistent vector search
-3. Batch embeddings
-4. Singleton model loading
-5. GPU auto-detection
-6. FP16 optimization
-7. CPU fallback
-8. Collection existence validation
-9. Memory-safe embedding
-10. LangChain compatibility
-11. Financial metadata preservation
-12. Graceful degradation
-13. Retrieval deduplication
-14. Dynamic top-k handling
-15. Environment-based disable support
 """
 
 from __future__ import annotations
@@ -28,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +32,6 @@ MIN_SIMILARITY = 0.0
 
 RETRIEVER_LABEL = "bge_m3"
 
-_COLLECTION_PREFIX = "finbench_"
-
 _BATCH_SIZE = 32
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -68,9 +47,7 @@ def get_sentence_transformers():
 
         import sentence_transformers
 
-        _ST_MODEL = (
-            sentence_transformers
-        )
+        _ST_MODEL = sentence_transformers
 
     return _ST_MODEL
 
@@ -86,6 +63,7 @@ def get_chromadb():
         _CHROMADB = chromadb
 
     return _CHROMADB
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utilities
@@ -133,6 +111,7 @@ def deduplicate_results(
 
     return unique
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BGERetriever
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,8 +134,6 @@ class BGERetriever:
 
         self._model = None
 
-        self._client = None
-
         self._disabled = bool(
             os.environ.get(
                 "DISABLE_BGE"
@@ -167,15 +144,7 @@ class BGERetriever:
             )
         )
 
-        if self._disabled:
-
-            logger.warning(
-                "[BGE] Disabled via environment"
-            )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # LangGraph Node
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def run(self, state):
 
@@ -191,21 +160,7 @@ class BGERetriever:
             "",
         ) or ""
 
-        if not query:
-
-            logger.warning(
-                "[BGE] Empty query"
-            )
-
-            state.retrieval_stage_1 = []
-
-            return state
-
-        if not collection:
-
-            logger.warning(
-                "[BGE] Missing collection"
-            )
+        if not query or not collection:
 
             state.retrieval_stage_1 = []
 
@@ -218,25 +173,13 @@ class BGERetriever:
             top_k=self.top_k,
         )
 
-        state.retrieval_stage_1 = (
-            results
-        )
+        state.retrieval_stage_1 = results
 
-        state.bge_results = (
-            results
-        )
-
-        logger.info(
-            "[BGE] query='%s' results=%d",
-            query[:50],
-            len(results),
-        )
+        state.bge_results = results
 
         return state
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Retrieve
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def retrieve(
         self,
@@ -249,33 +192,17 @@ class BGERetriever:
         if not query:
             return []
 
-        if not collection_name:
-            return []
-
         if self._disabled:
-
-            logger.warning(
-                "[BGE] Disabled"
-            )
-
             return []
 
         try:
 
-            collection = (
-                self._load_collection(
-                    collection_name,
-                    data_dir,
-                )
+            collection = self._load_collection(
+                collection_name,
+                data_dir,
             )
 
             if collection is None:
-
-                logger.warning(
-                    "[BGE] Collection missing: %s",
-                    collection_name,
-                )
-
                 return []
 
             model = self._load_model()
@@ -284,14 +211,8 @@ class BGERetriever:
                 query
             )
 
-            query_instruction = (
-                "Represent this sentence "
-                "for searching relevant passages: "
-                f"{query}"
-            )
-
             embedding = model.encode(
-                query_instruction,
+                f"Represent this sentence for searching relevant passages: {query}",
                 normalize_embeddings=True,
                 show_progress_bar=False,
             ).tolist()
@@ -311,34 +232,26 @@ class BGERetriever:
                 ],
             )
 
-            formatted = (
-                self._format_results(
-                    results,
-                    top_k,
-                )
+            formatted = self._format_results(
+                results,
+                top_k,
             )
 
-            formatted = (
-                deduplicate_results(
-                    formatted
-                )
+            return deduplicate_results(
+                formatted
             )
-
-            return formatted
 
         except Exception as exc:
 
             logger.error(
-                "[BGE] Retrieve failed: %s",
+                "[BGE] Retrieval failed: %s",
                 exc,
                 exc_info=True,
             )
 
             return []
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Build Collection
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def build_collection(
         self,
@@ -348,19 +261,9 @@ class BGERetriever:
     ) -> bool:
 
         if not chunks:
-
-            logger.warning(
-                "[BGE] No chunks"
-            )
-
             return False
 
         if self._disabled:
-
-            logger.warning(
-                "[BGE] Disabled"
-            )
-
             return False
 
         try:
@@ -427,19 +330,15 @@ class BGERetriever:
                     i:i + _BATCH_SIZE
                 ]
 
-                instructed = [
-                    f"passage: {t}"
-                    for t in batch_texts
-                ]
-
-                embeddings = (
-                    model.encode(
-                        instructed,
-                        batch_size=_BATCH_SIZE,
-                        normalize_embeddings=True,
-                        show_progress_bar=False,
-                    ).tolist()
-                )
+                embeddings = model.encode(
+                    [
+                        f"passage: {t}"
+                        for t in batch_texts
+                    ],
+                    batch_size=_BATCH_SIZE,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                ).tolist()
 
                 collection.add(
                     ids=batch_ids,
@@ -447,20 +346,6 @@ class BGERetriever:
                     embeddings=embeddings,
                     metadatas=batch_meta,
                 )
-
-                logger.info(
-                    "[BGE] Embedded %d/%d",
-                    min(
-                        i + _BATCH_SIZE,
-                        len(texts),
-                    ),
-                    len(texts),
-                )
-
-            logger.info(
-                "[BGE] Collection built: %s",
-                collection_name,
-            )
 
             return True
 
@@ -474,82 +359,7 @@ class BGERetriever:
 
             return False
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # LangChain
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def as_langchain_retriever(
-        self,
-        collection_name: str,
-        data_dir: str = "data",
-        top_k: int = DEFAULT_TOP_K,
-    ):
-
-        return BGELangChainRetriever(
-            bge_retriever=self,
-            collection_name=collection_name,
-            data_dir=data_dir,
-            top_k=top_k,
-        )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Collection Checks
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def collection_exists(
-        self,
-        collection_name: str,
-        data_dir: str = "data",
-    ) -> bool:
-
-        try:
-
-            client = self._get_client(
-                data_dir
-            )
-
-            names = [
-                c.name
-                for c in client.list_collections()
-            ]
-
-            return (
-                collection_name
-                in names
-            )
-
-        except Exception:
-
-            return False
-
-    def get_collection_count(
-        self,
-        collection_name: str,
-        data_dir: str = "data",
-    ) -> int:
-
-        try:
-
-            collection = (
-                self._load_collection(
-                    collection_name,
-                    data_dir,
-                )
-            )
-
-            return (
-                collection.count()
-                if collection
-                else 0
-            )
-
-        except Exception:
-
-            return 0
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Private
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _load_model(self):
 
@@ -560,128 +370,34 @@ class BGERetriever:
             get_sentence_transformers()
         )
 
-        forced = os.environ.get(
-            "BGE_DEVICE",
-            "",
-        ).strip().lower()
-
-        allow_fp16 = (
-            os.environ.get(
-                "BGE_FP16",
-                "1",
-            ) != "0"
-        )
-
         device = "cpu"
-
-        if forced in (
-            "cpu",
-            "cuda",
-            "mps",
-        ):
-
-            device = forced
-
-        else:
-
-            try:
-
-                import torch
-
-                if (
-                    torch.cuda.is_available()
-                ):
-                    device = "cuda"
-
-            except Exception:
-                pass
-
-        use_fp16 = False
-
-        if device == "cuda":
-
-            try:
-
-                import torch
-
-                free_bytes, total_bytes = (
-                    torch.cuda.mem_get_info()
-                )
-
-                free_gb = (
-                    free_bytes / 1e9
-                )
-
-                if free_gb < 1.0:
-
-                    logger.warning(
-                        "[BGE] GPU low memory → CPU"
-                    )
-
-                    device = "cpu"
-
-                elif (
-                    free_gb < 2.5
-                    and allow_fp16
-                ):
-
-                    use_fp16 = True
-
-            except Exception:
-                pass
-
-        logger.info(
-            "[BGE] Loading model "
-            "device=%s fp16=%s",
-            device,
-            use_fp16,
-        )
 
         try:
 
-            kwargs = {
-                "device": device
-            }
+            import torch
 
-            if (
-                use_fp16
-                and device == "cuda"
-            ):
+            if torch.cuda.is_available():
 
-                import torch
+                device = "cuda"
 
-                kwargs[
-                    "model_kwargs"
-                ] = {
-                    "torch_dtype": torch.float16
-                }
-
-            self._model = (
-                st.SentenceTransformer(
-                    self.model_name,
-                    **kwargs,
-                )
-            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "[BGE] GPU load failed: %s",
-                exc,
-            )
-
-            self._model = (
-                st.SentenceTransformer(
-                    self.model_name,
-                    device="cpu",
-                )
-            )
+        except Exception:
+            pass
 
         logger.info(
-            "[BGE] Model loaded"
+            "[BGE] Loading model on %s",
+            device,
+        )
+
+        self._model = (
+            st.SentenceTransformer(
+                self.model_name,
+                device=device,
+            )
         )
 
         return self._model
+
+    # ─────────────────────────────────────────────────────────────────────
 
     def _get_client(
         self,
@@ -701,8 +417,14 @@ class BGERetriever:
         chromadb = get_chromadb()
 
         return chromadb.PersistentClient(
-            path=chromadb_path
+            path=chromadb_path,
+            settings=chromadb.Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+            ),
         )
+
+    # ─────────────────────────────────────────────────────────────────────
 
     def _load_collection(
         self,
@@ -723,6 +445,8 @@ class BGERetriever:
         except Exception:
 
             return None
+
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _build_metadata(
@@ -766,13 +490,9 @@ class BGERetriever:
                     0,
                 )
             ),
-            "prefix": str(
-                chunk.get(
-                    "prefix",
-                    "",
-                )
-            ),
         }
+
+    # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _format_results(
@@ -821,10 +541,7 @@ class BGERetriever:
                 1.0 - float(dist),
             )
 
-            if (
-                similarity
-                < MIN_SIMILARITY
-            ):
+            if similarity < MIN_SIMILARITY:
                 continue
 
             formatted.append(
@@ -860,114 +577,14 @@ class BGERetriever:
                         "page",
                         0,
                     ),
-                    "prefix": meta.get(
-                        "prefix",
-                        "",
-                    ),
                 }
             )
 
-            if (
-                len(formatted)
-                >= top_k
-            ):
+            if len(formatted) >= top_k:
                 break
 
         return formatted
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LangChain Wrapper
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class BGELangChainRetriever:
-
-    def __init__(
-        self,
-        bge_retriever: BGERetriever,
-        collection_name: str,
-        data_dir: str = "data",
-        top_k: int = DEFAULT_TOP_K,
-    ):
-
-        self._retriever = (
-            bge_retriever
-        )
-
-        self._collection = (
-            collection_name
-        )
-
-        self._data_dir = data_dir
-
-        self._top_k = top_k
-
-    def invoke(
-        self,
-        query: str,
-    ):
-
-        try:
-
-            from langchain_core.documents import (
-                Document,
-            )
-
-        except Exception:
-
-            logger.warning(
-                "[BGE] LangChain unavailable"
-            )
-
-            return []
-
-        results = (
-            self._retriever.retrieve(
-                query=query,
-                collection_name=self._collection,
-                data_dir=self._data_dir,
-                top_k=self._top_k,
-            )
-        )
-
-        return [
-            Document(
-                page_content=r["text"],
-                metadata={
-                    "chunk_id": r[
-                        "chunk_id"
-                    ],
-                    "bge_score": r[
-                        "bge_score"
-                    ],
-                    "rank": r["rank"],
-                    "retriever": r[
-                        "retriever"
-                    ],
-                    "company": r[
-                        "company"
-                    ],
-                    "doc_type": r[
-                        "doc_type"
-                    ],
-                    "fiscal_year": r[
-                        "fiscal_year"
-                    ],
-                    "section": r[
-                        "section"
-                    ],
-                    "page": r["page"],
-                },
-            )
-            for r in results
-        ]
-
-    def get_relevant_documents(
-        self,
-        query: str,
-    ):
-
-        return self.invoke(query)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Convenience Wrapper
