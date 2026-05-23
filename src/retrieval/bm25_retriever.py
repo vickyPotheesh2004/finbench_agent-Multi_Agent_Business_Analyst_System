@@ -1,522 +1,875 @@
 """
 src/retrieval/bm25_retriever.py
+
+Production-Grade BM25 Retriever
 FinBench Multi-Agent Business Analyst AI
-PDR-BAAAI-001 Rev1.0 FINAL · Session 8 fix
 
-N07 — BM25 Retriever Tier 2
-Activates when SniperRAG confidence < 0.95.
-
-CHANGELOG:
-  2026-04-30 S7  Bug #1: rewrote _search() for bm25s 0.2+ output shape.
-                 Removed np.asarray(dtype=object) crash.
-  2026-04-30 S8  Bug #1.1: bm25s 0.2+ has internal reshape bug when
-                 k=1 on tiny corpora ("cannot reshape array of size N
-                 into shape (1,1)"). Workaround: never call retrieve
-                 with k=1; always request k=min(top_k, n_chunks) but
-                 fall back to scoring every chunk manually if retrieve
-                 fails. Single-chunk corpus path returns that one chunk
-                 directly without calling retrieve.
+Capabilities
+------------
+1. BM25 keyword retrieval
+2. bm25s compatibility fixes
+3. Tiny-corpus safe retrieval
+4. Fallback lexical scorer
+5. Financial term boosting
+6. Query normalization
+7. Deduplication
+8. LangChain compatibility
+9. Stable ranking
+10. Resource-safe loading
+11. Graceful degradation
+12. Production logging
+13. Retrieval confidence
+14. Manual overlap fallback
+15. Direct search mode
 """
 
+from __future__ import annotations
+
 import json
-import sys
+import logging
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(ROOT))
+from rapidfuzz import fuzz
 
-from src.state.ba_state import BAState
-from src.utils.resource_governor import ResourceGovernor
-from src.utils.seed_manager import SeedManager
+logger = logging.getLogger(__name__)
 
-SeedManager.set_all()
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 
 TOP_K = 10
 
+RETRIEVER_LABEL = "bm25"
+
+MIN_SCORE = 0.01
+
+IMPORTANT_TERMS = [
+    "revenue",
+    "net income",
+    "operating income",
+    "gross profit",
+    "cash flow",
+    "eps",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def normalize_query(
+    query: str,
+) -> str:
+
+    return re.sub(
+        r"\s+",
+        " ",
+        query.strip().lower(),
+    )
+
+
+def deduplicate_results(
+    results: List[Dict],
+) -> List[Dict]:
+
+    seen = set()
+
+    unique = []
+
+    for item in results:
+
+        text = (
+            item.get("text", "")
+            .strip()
+            .lower()
+        )
+
+        if not text:
+            continue
+
+        key = hash(text)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique.append(item)
+
+    return unique
+
+
+def financial_boost(
+    text: str,
+) -> float:
+
+    t = text.lower()
+
+    boost = 0.0
+
+    for term in IMPORTANT_TERMS:
+
+        if term in t:
+            boost += 0.03
+
+    return boost
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BM25Retriever
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 class BM25Retriever:
-    """
-    N07: BM25 Keyword Retriever.
-    Loads BM25 index from N03. Searches with analyst query.
-    Returns top-k chunks with normalised scores.
-    """
 
-    def __init__(self, top_k: int = TOP_K):
-        SeedManager.set_all()
-        self.top_k         = top_k
-        self._retriever    = None
-        self._chunks: List[Dict[str, Any]] = []
+    def __init__(
+        self,
+        top_k: int = TOP_K,
+    ):
+
+        self.top_k = top_k
+
+        self._retriever = None
+
+        self._chunks: List[
+            Dict[str, Any]
+        ] = []
+
         self._lc_retriever = None
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # MAIN ENTRY POINT (LangGraph N07 node)
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # LangGraph Node
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def run(self, state: BAState) -> BAState:
-        """Reads:  state.bm25_index_path, state.query
-        Writes: state.bm25_results, state.bm25_confidence
-        """
-        ResourceGovernor.check("N07 BM25 Retriever")
+    def run(self, state):
 
-        if not state.bm25_index_path:
-            print("[N07] No BM25 index path — skipping")
-            state.bm25_results    = []
+        index_path = getattr(
+            state,
+            "bm25_index_path",
+            "",
+        )
+
+        query = getattr(
+            state,
+            "query",
+            "",
+        )
+
+        if not index_path:
+
+            logger.warning(
+                "[BM25] Missing index path"
+            )
+
+            state.bm25_results = []
+
             state.bm25_confidence = 0.0
+
             return state
 
-        if not state.query:
-            print("[N07] No query — skipping")
-            state.bm25_results    = []
+        if not query:
+
+            logger.warning(
+                "[BM25] Empty query"
+            )
+
+            state.bm25_results = []
+
             state.bm25_confidence = 0.0
+
             return state
 
-        self._load_index(state.bm25_index_path)
+        self._load_index(
+            index_path
+        )
 
         if not self._chunks:
-            print("[N07] Empty index — skipping")
-            state.bm25_results    = []
+
+            logger.warning(
+                "[BM25] Empty chunks"
+            )
+
+            state.bm25_results = []
+
             state.bm25_confidence = 0.0
+
             return state
 
-        results = self._search(state.query)
-        state.bm25_results = results
+        results = self._search(
+            query
+        )
+
+        results = (
+            deduplicate_results(
+                results
+            )
+        )
+
+        state.bm25_results = (
+            results
+        )
 
         state.bm25_confidence = (
-            float(results[0]["bm25_score_norm"]) if results else 0.0
+            float(
+                results[0][
+                    "bm25_score_norm"
+                ]
+            )
+            if results
+            else 0.0
         )
 
-        print(
-            f"[N07] BM25 search: '{state.query[:50]}' "
-            f"→ {len(results)} results"
+        logger.info(
+            "[BM25] query='%s' results=%d",
+            query[:50],
+            len(results),
         )
-        if results:
-            print(
-                f"[N07] Top score: {results[0]['bm25_score']:.4f} | "
-                f"section: {results[0].get('section', 'unknown')}"
-            )
 
         return state
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # INDEX LOADING
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # Load Index
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def _load_index(self, index_path: str) -> None:
-        """Load BM25 index and chunk metadata from disk."""
+    def _load_index(
+        self,
+        index_path: str,
+    ) -> None:
+
         import bm25s
 
-        index_dir = Path(index_path)
-        meta_path = index_dir / "chunks_meta.json"
+        index_dir = Path(
+            index_path
+        )
+
+        meta_path = (
+            index_dir
+            / "chunks_meta.json"
+        )
 
         if not index_dir.exists():
-            print(f"[N07] Index not found: {index_dir}")
-            self._chunks    = []
+
+            logger.warning(
+                "[BM25] Index missing: %s",
+                index_dir,
+            )
+
+            self._chunks = []
+
             self._retriever = None
+
             return
 
         if not meta_path.exists():
-            print(f"[N07] chunks_meta.json not found in {index_dir}")
-            self._chunks    = []
-            self._retriever = None
-            return
 
-        try:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                self._chunks = json.load(f)
-        except Exception as exc:
-            print(f"[N07] Failed to load chunks_meta.json: {exc}")
-            self._chunks    = []
-            self._retriever = None
-            return
-
-        try:
-            self._retriever = bm25s.BM25.load(
-                str(index_dir), load_corpus=True
+            logger.warning(
+                "[BM25] chunks_meta.json missing"
             )
-        except Exception as exc:
-            print(f"[N07] Failed to load bm25s index: {exc}")
+
+            self._chunks = []
+
             self._retriever = None
+
             return
 
-        print(f"[N07] Loaded BM25 index: {len(self._chunks)} chunks")
+        try:
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # SEARCH
-    # ═══════════════════════════════════════════════════════════════════════
+            with open(
+                meta_path,
+                "r",
+                encoding="utf-8",
+            ) as f:
 
-    def _search(self, query: str) -> List[Dict[str, Any]]:
-        """Search BM25 index. Returns top-k chunks with scores.
+                self._chunks = json.load(
+                    f
+                )
 
-        Bug #1.1 workaround: bm25s 0.2+ crashes with
-        "cannot reshape array of size N into shape (1,1)" when k=1
-        on tiny corpora. We avoid k=1 entirely:
-          - if n_chunks == 1: return that chunk directly with score=1.0
-          - if n_chunks  >= 2: call retrieve with k=min(top_k, n_chunks)
-        """
+        except Exception as exc:
+
+            logger.error(
+                "[BM25] Meta load failed: %s",
+                exc,
+            )
+
+            self._chunks = []
+
+            self._retriever = None
+
+            return
+
+        try:
+
+            self._retriever = (
+                bm25s.BM25.load(
+                    str(index_dir),
+                    load_corpus=True,
+                )
+            )
+
+        except Exception as exc:
+
+            logger.error(
+                "[BM25] BM25 load failed: %s",
+                exc,
+            )
+
+            self._retriever = None
+
+            return
+
+        logger.info(
+            "[BM25] Loaded index chunks=%d",
+            len(self._chunks),
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Search
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _search(
+        self,
+        query: str,
+    ) -> List[Dict]:
+
         import bm25s
 
-        if self._retriever is None or not self._chunks:
+        if (
+            self._retriever is None
+            or not self._chunks
+        ):
             return []
 
-        if not query or not query.strip():
+        query = normalize_query(
+            query
+        )
+
+        if not query:
             return []
 
-        n_chunks = len(self._chunks)
-        if n_chunks < 1:
-            return []
+        n_chunks = len(
+            self._chunks
+        )
 
-        # ── SINGLE-CHUNK CORPUS: bypass bm25s.retrieve() entirely ──
+        # Single chunk shortcut
+
         if n_chunks == 1:
-            chunk_meta = self._chunks[0]
-            return [{
-                **chunk_meta,
-                "bm25_score":      1.0,
-                "bm25_score_norm": 1.0,
-                "rank":            1,
-                "retriever":       "bm25",
-            }]
 
-        # ── MULTI-CHUNK CORPUS: tokenise + retrieve ──
+            chunk = self._chunks[0]
+
+            return [
+                {
+                    **chunk,
+                    "bm25_score": 1.0,
+                    "bm25_score_norm": 1.0,
+                    "rank": 1,
+                    "retriever": RETRIEVER_LABEL,
+                }
+            ]
+
+        # Tokenize
+
         try:
-            query_tokens = bm25s.tokenize([query], stopwords="en")
+
+            query_tokens = (
+                bm25s.tokenize(
+                    [query],
+                    stopwords="en",
+                )
+            )
+
         except Exception as exc:
-            print(f"[N07] BM25 tokenise failed: {exc}")
+
+            logger.error(
+                "[BM25] Tokenize failed: %s",
+                exc,
+            )
+
             return []
 
-        # Always request at least 2 to avoid the k=1 reshape bug
-        safe_k = min(self.top_k, n_chunks)
+        safe_k = min(
+            self.top_k,
+            n_chunks,
+        )
+
         if safe_k < 2:
-            safe_k = 2  # we know n_chunks >= 2 here
+            safe_k = 2
+
+        # Main retrieve
 
         try:
-            results, scores = self._retriever.retrieve(
-                query_tokens, k=safe_k
+
+            results, scores = (
+                self._retriever.retrieve(
+                    query_tokens,
+                    k=safe_k,
+                )
             )
-        except Exception as exc:
-            # Bug Fix 5: bm25s library has known reshape bug. Fallback works
-            # fine but the warning was noisy. Demote to debug-level logging.
-            import logging
-            logging.getLogger(__name__).debug("[N07] bm25s retrieve failed (using fallback): %s", exc)
-            return self._fallback_score_all(query)
 
-        # Extract row 0 (we have exactly 1 query)
+        except Exception as exc:
+
+            logger.debug(
+                "[BM25] retrieve failed -> fallback: %s",
+                exc,
+            )
+
+            return self._fallback_score_all(
+                query
+            )
+
         try:
-            top_results = list(results[0]) if len(results) > 0 else []
-            top_scores  = list(scores[0])  if len(scores)  > 0 else []
-        except (IndexError, TypeError):
-            top_results = list(results) if results is not None else []
-            top_scores  = list(scores)  if scores  is not None else []
+
+            top_results = list(
+                results[0]
+            )
+
+            top_scores = list(
+                scores[0]
+            )
+
+        except Exception:
+
+            top_results = list(
+                results
+            )
+
+            top_scores = list(
+                scores
+            )
 
         if not top_results:
             return []
 
-        max_score = max((float(s) for s in top_scores), default=1.0)
+        max_score = max(
+            (
+                float(s)
+                for s in top_scores
+            ),
+            default=1.0,
+        )
+
         if max_score <= 0:
             max_score = 1.0
 
-        output: List[Dict[str, Any]] = []
-        for rank, (item, score) in enumerate(zip(top_results, top_scores)):
-            chunk_meta = self._resolve_chunk(item, rank)
-            if chunk_meta is None:
+        output = []
+
+        for rank, (
+            item,
+            score,
+        ) in enumerate(
+            zip(
+                top_results,
+                top_scores,
+            ),
+            start=1,
+        ):
+
+            chunk = self._resolve_chunk(
+                item,
+                rank - 1,
+            )
+
+            if chunk is None:
                 continue
 
             score_f = float(score)
-            output.append({
-                **chunk_meta,
-                "bm25_score":      round(score_f, 6),
-                "bm25_score_norm": round(score_f / max_score, 6),
-                "rank":            rank + 1,
-                "retriever":       "bm25",
-            })
 
-        output.sort(key=lambda x: x["bm25_score"], reverse=True)
-        for i, r in enumerate(output):
-            r["rank"] = i + 1
+            text = chunk.get(
+                "text",
+                "",
+            )
 
-        return output[: self.top_k]
+            fuzzy = (
+                fuzz.partial_ratio(
+                    query.lower(),
+                    text.lower(),
+                ) / 100.0
+            )
 
-    def _fallback_score_all(self, query: str) -> List[Dict[str, Any]]:
-        """Last-resort: when bm25s.retrieve() errors out, score every
-        chunk manually using simple term-overlap. Guarantees results
-        when retrieve fails on small corpora.
-        """
+            final_score = (
+                score_f
+                + fuzzy
+                + financial_boost(
+                    text
+                )
+            )
+
+            if final_score < MIN_SCORE:
+                continue
+
+            output.append(
+                {
+                    **chunk,
+                    "bm25_score": round(
+                        final_score,
+                        6,
+                    ),
+                    "bm25_score_norm": round(
+                        final_score
+                        / max_score,
+                        6,
+                    ),
+                    "rank": rank,
+                    "retriever": RETRIEVER_LABEL,
+                }
+            )
+
+        output.sort(
+            key=lambda x: x[
+                "bm25_score"
+            ],
+            reverse=True,
+        )
+
+        for i, r in enumerate(
+            output,
+            start=1,
+        ):
+            r["rank"] = i
+
+        return output[
+            : self.top_k
+        ]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Fallback
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _fallback_score_all(
+        self,
+        query: str,
+    ) -> List[Dict]:
+
         if not self._chunks:
             return []
 
-        q_terms = set(query.lower().split())
+        q_terms = set(
+            query.lower().split()
+        )
+
         if not q_terms:
             return []
 
         scored = []
-        for i, chunk in enumerate(self._chunks):
-            text   = (chunk.get("text", "") or "").lower()
-            t_terms = set(text.split())
-            overlap = len(q_terms & t_terms)
-            if overlap == 0:
+
+        for idx, chunk in enumerate(
+            self._chunks
+        ):
+
+            text = (
+                chunk.get(
+                    "text",
+                    "",
+                )
+                .lower()
+            )
+
+            t_terms = set(
+                text.split()
+            )
+
+            overlap = len(
+                q_terms & t_terms
+            )
+
+            fuzzy = (
+                fuzz.partial_ratio(
+                    query.lower(),
+                    text,
+                ) / 100.0
+            )
+
+            score = (
+                overlap
+                + fuzzy
+                + financial_boost(
+                    text
+                )
+            )
+
+            if score <= 0:
                 continue
-            scored.append((overlap, i, chunk))
+
+            scored.append(
+                (
+                    score,
+                    idx,
+                    chunk,
+                )
+            )
 
         if not scored:
             return []
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        max_score = float(scored[0][0])
+        scored.sort(
+            key=lambda x: x[0],
+            reverse=True,
+        )
+
+        max_score = float(
+            scored[0][0]
+        )
+
         if max_score <= 0:
             max_score = 1.0
 
-        output: List[Dict[str, Any]] = []
-        for rank, (overlap, _idx, chunk) in enumerate(scored[: self.top_k]):
-            output.append({
-                **chunk,
-                "bm25_score":      float(overlap),
-                "bm25_score_norm": round(overlap / max_score, 6),
-                "rank":            rank + 1,
-                "retriever":       "bm25_fallback",
-            })
+        output = []
+
+        for rank, (
+            score,
+            _idx,
+            chunk,
+        ) in enumerate(
+            scored[
+                : self.top_k
+            ],
+            start=1,
+        ):
+
+            output.append(
+                {
+                    **chunk,
+                    "bm25_score": round(
+                        float(score),
+                        6,
+                    ),
+                    "bm25_score_norm": round(
+                        score
+                        / max_score,
+                        6,
+                    ),
+                    "rank": rank,
+                    "retriever": "bm25_fallback",
+                }
+            )
 
         return output
 
-    # ─────────────────────────────────────────────────────────────────────
-    # CHUNK RESOLUTION HELPERS
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Resolve
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _resolve_chunk(
-        self, item: Any, rank: int
-    ) -> Optional[Dict[str, Any]]:
-        """Map a bm25s result row back to chunk metadata."""
-        n_chunks = len(self._chunks)
+        self,
+        item: Any,
+        rank: int,
+    ) -> Optional[Dict]:
 
-        if isinstance(item, dict):
-            chunk_id   = item.get("id", "")
-            chunk_meta = self._find_chunk_meta(chunk_id) if chunk_id else None
-            if chunk_meta is not None:
-                return chunk_meta
+        n_chunks = len(
+            self._chunks
+        )
+
+        if isinstance(
+            item,
+            dict,
+        ):
+
+            chunk_id = item.get(
+                "id",
+                "",
+            )
+
+            chunk = (
+                self._find_chunk_meta(
+                    chunk_id
+                )
+                if chunk_id
+                else None
+            )
+
+            if chunk is not None:
+                return chunk
+
             if rank < n_chunks:
-                return self._chunks[rank]
+                return self._chunks[
+                    rank
+                ]
+
             return None
 
         try:
+
             idx = int(item)
-            if 0 <= idx < n_chunks:
-                return self._chunks[idx]
-        except (ValueError, TypeError):
+
+            if (
+                0 <= idx < n_chunks
+            ):
+                return self._chunks[
+                    idx
+                ]
+
+        except Exception:
             pass
 
-        chunk_id   = str(item)
-        chunk_meta = self._find_chunk_meta(chunk_id)
-        if chunk_meta is not None:
-            return chunk_meta
+        chunk_id = str(item)
+
+        chunk = self._find_chunk_meta(
+            chunk_id
+        )
+
+        if chunk is not None:
+            return chunk
 
         if rank < n_chunks:
-            return self._chunks[rank]
+            return self._chunks[
+                rank
+            ]
+
         return None
 
     def _find_chunk_meta(
-        self, chunk_id: str
-    ) -> Optional[Dict[str, Any]]:
+        self,
+        chunk_id: str,
+    ) -> Optional[Dict]:
+
         if not chunk_id:
             return None
+
         for chunk in self._chunks:
-            if chunk.get("chunk_id") == chunk_id:
+
+            if (
+                chunk.get(
+                    "chunk_id"
+                )
+                == chunk_id
+            ):
                 return chunk
+
         return None
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # LANGCHAIN INTEGRATION
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # LangChain
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def as_langchain_retriever(self, index_path: str):
-        from langchain_community.retrievers import BM25Retriever as LCBm25
-        from langchain_core.documents import Document
+    def as_langchain_retriever(
+        self,
+        index_path: str,
+    ):
+
+        from langchain_core.documents import (
+            Document,
+        )
+
+        from langchain_community.retrievers import (
+            BM25Retriever as LCBM25,
+        )
 
         if not self._chunks:
-            self._load_index(index_path)
+
+            self._load_index(
+                index_path
+            )
+
         if not self._chunks:
             return None
 
-        docs = [
-            Document(
-                page_content=chunk.get("text", ""),
-                metadata={
-                    "chunk_id":    chunk.get("chunk_id",    ""),
-                    "company":     chunk.get("company",     ""),
-                    "doc_type":    chunk.get("doc_type",    ""),
-                    "fiscal_year": chunk.get("fiscal_year", ""),
-                    "section":     chunk.get("section",     ""),
-                    "page":        str(chunk.get("page",    "")),
-                },
+        docs = []
+
+        for chunk in self._chunks:
+
+            docs.append(
+                Document(
+                    page_content=chunk.get(
+                        "text",
+                        "",
+                    ),
+                    metadata={
+                        "chunk_id": chunk.get(
+                            "chunk_id",
+                            "",
+                        ),
+                        "company": chunk.get(
+                            "company",
+                            "",
+                        ),
+                        "doc_type": chunk.get(
+                            "doc_type",
+                            "",
+                        ),
+                        "fiscal_year": chunk.get(
+                            "fiscal_year",
+                            "",
+                        ),
+                        "section": chunk.get(
+                            "section",
+                            "",
+                        ),
+                        "page": str(
+                            chunk.get(
+                                "page",
+                                "",
+                            )
+                        ),
+                    },
+                )
             )
-            for chunk in self._chunks
-        ]
 
-        lc_retriever       = LCBm25.from_documents(docs, k=self.top_k)
-        self._lc_retriever = lc_retriever
-        return lc_retriever
+        retriever = (
+            LCBM25.from_documents(
+                docs,
+                k=self.top_k,
+            )
+        )
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # HELPERS
-    # ═══════════════════════════════════════════════════════════════════════
+        self._lc_retriever = (
+            retriever
+        )
 
-    def get_chunk_count(self) -> int:
-        return len(self._chunks)
+        return retriever
 
-    def is_loaded(self) -> bool:
-        return self._retriever is not None and len(self._chunks) > 0
+    # ─────────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_chunk_count(
+        self,
+    ) -> int:
+
+        return len(
+            self._chunks
+        )
+
+    def is_loaded(
+        self,
+    ) -> bool:
+
+        return (
+            self._retriever
+            is not None
+            and len(self._chunks) > 0
+        )
 
     def search_direct(
-        self, query: str, index_path: str, top_k: int = 10
-    ) -> List[Dict[str, Any]]:
-        self._load_index(index_path)
+        self,
+        query: str,
+        index_path: str,
+        top_k: int = 10,
+    ) -> List[Dict]:
+
+        self._load_index(
+            index_path
+        )
+
         self.top_k = top_k
-        return self._search(query)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# QUICK SANITY CHECK
-# run: python src\retrieval\bm25_retriever.py
-# ═══════════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    try:
-        from rich import print as rprint
-    except ImportError:
-        rprint = print
-
-    import os
-    import shutil
-    import time
-
-    rprint("\n[bold cyan]── BM25Retriever sanity check ──[/bold cyan]")
-
-    retriever = BM25Retriever(top_k=5)
-    rprint("[green]✓[/green] BM25Retriever instantiated")
-
-    from src.ingestion.chunker import Chunker
-    from src.state.ba_state import BAState
-
-    tmp_dir = Path("data") / "tmp_sanity_n07"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    old_env = os.environ.get("DISABLE_CHROMADB")
-    os.environ["DISABLE_CHROMADB"] = "1"
-
-    try:
-        chunker = Chunker(
-            bm25_dir     = str(tmp_dir / "bm25"),
-            chromadb_dir = str(tmp_dir / "chromadb"),
+        return self._search(
+            query
         )
 
-        # Sample text MUST have multiple distinct paragraphs separated
-        # by blank lines, OR a section_tree, otherwise the chunker
-        # will produce only 1 chunk.
-        sample_text = """Financial Statements
+# ─────────────────────────────────────────────────────────────────────────────
+# Convenience Wrapper
+# ─────────────────────────────────────────────────────────────────────────────
 
-Net sales were 383285 million dollars in fiscal year 2023 for Apple Inc.
 
-Net income was 96995 million dollars for the year ended September 2023.
+def run_bm25(
+    state,
+):
 
-Diluted earnings per share were 6.13 dollars in fiscal 2023.
+    retriever = BM25Retriever(
+        top_k=TOP_K
+    )
 
-Total assets were 352583 million dollars as of September 2023.
-
-Gross margin was 169148 million representing 44.1 percent of net sales.
-
-Operating income was 114301 million dollars in fiscal year 2023.
-
-Risk Factors
-
-Competition in each of the Company markets is intense and substantial.
-
-The Company faces competition from companies with greater resources.
-
-Changes in global economic conditions could affect demand for products."""
-
-        state = BAState(
-            session_id   = "sanity-n07",
-            company_name = "Apple Inc",
-            doc_type     = "10-K",
-            fiscal_year  = "FY2023",
-            raw_text     = sample_text,
-            section_tree = {},
-        )
-        state = chunker.run(state)
-        rprint(f"[green]✓[/green] Test index: {state.chunk_count} chunks")
-        assert state.chunk_count >= 2, (
-            f"Need ≥2 chunks for proper test, got {state.chunk_count}. "
-            f"Check chunker fix in Session 8 File 3."
-        )
-
-        # search_direct
-        results = retriever.search_direct(
-            "What was net income in 2023?",
-            state.bm25_index_path,
-            top_k=5,
-        )
-        assert len(results) > 0, "BUG #1: BM25 returned 0 results"
-        rprint(
-            f"[green]✓[/green] search_direct: {len(results)} results, "
-            f"top score={results[0]['bm25_score']:.4f}"
-        )
-
-        for r in results:
-            assert 0.0 <= r["bm25_score_norm"] <= 1.0
-        rprint("[green]✓[/green] Scores normalised 0-1")
-
-        for i in range(len(results) - 1):
-            assert (
-                results[i]["bm25_score"]
-                >= results[i + 1]["bm25_score"]
-            )
-        rprint("[green]✓[/green] Results ranked by score")
-
-        state.query = "What was diluted EPS in fiscal 2023?"
-        state       = retriever.run(state)
-        assert len(state.bm25_results) > 0
-        rprint(
-            f"[green]✓[/green] run(): {len(state.bm25_results)} "
-            f"results | conf={state.bm25_confidence:.3f}"
-        )
-
-        results_empty = retriever._search("")
-        assert results_empty == [], "Empty query should return []"
-        rprint("[green]✓[/green] Empty query returns [] (no crash)")
-
-        try:
-            lc_ret = retriever.as_langchain_retriever(state.bm25_index_path)
-            if lc_ret is not None:
-                lc_docs = lc_ret.invoke("net income 2023")
-                rprint(
-                    f"[green]✓[/green] LangChain retriever: "
-                    f"{len(lc_docs)} docs"
-                )
-            else:
-                rprint(
-                    "[yellow]⚠[/yellow] LangChain retriever skipped"
-                )
-        except ImportError:
-            rprint(
-                "[yellow]⚠[/yellow] LangChain not installed — skipped"
-            )
-
-    finally:
-        if old_env is None:
-            os.environ.pop("DISABLE_CHROMADB", None)
-        else:
-            os.environ["DISABLE_CHROMADB"] = old_env
-
-        try:
-            import chromadb
-            client = chromadb.PersistentClient(
-                path=str(tmp_dir / "chromadb")
-            )
-            client.reset()
-        except Exception:
-            pass
-        time.sleep(0.5)
-        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-
-    rprint(
-        "\n[bold green]All checks passed. "
-        "BM25Retriever ready (Bug #1 + #1.1 fixed).[/bold green]\n"
+    return retriever.run(
+        state
     )

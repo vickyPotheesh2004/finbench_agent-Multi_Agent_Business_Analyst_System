@@ -1,514 +1,1000 @@
 """
-N08 BGE-M3 Semantic Retriever — Tier 3 Dense Embedding Search
-PDR-BAAAI-001 · Rev 1.0 · Node N08
+src/retrieval/bge_retriever.py
 
-CHANGELOG:
-  2026-04-30 S13  Bug #3: run_bge() reads state.chromadb_data_dir
-  2026-04-30 S15  Bug #8: collection check before model load + DISABLE_BGE
+Production-Grade BGE-M3 Semantic Retriever
+FinBench Multi-Agent Business Analyst AI
+
+Capabilities
+------------
+1. BGE-M3 semantic retrieval
+2. ChromaDB persistent vector search
+3. Batch embeddings
+4. Singleton model loading
+5. GPU auto-detection
+6. FP16 optimization
+7. CPU fallback
+8. Collection existence validation
+9. Memory-safe embedding
+10. LangChain compatibility
+11. Financial metadata preservation
+12. Graceful degradation
+13. Retrieval deduplication
+14. Dynamic top-k handling
+15. Environment-based disable support
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Lazy imports
-_sentence_transformers = None
-_chromadb = None
+# ─────────────────────────────────────────────────────────────────────────────
+# Lazy Globals
+# ─────────────────────────────────────────────────────────────────────────────
 
+_ST_MODEL = None
+_CHROMADB = None
 
-def _get_sentence_transformers():
-    global _sentence_transformers
-    if _sentence_transformers is None:
-        import sentence_transformers
-        _sentence_transformers = sentence_transformers
-    return _sentence_transformers
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 
+DEFAULT_MODEL = "BAAI/bge-m3"
 
-def _get_chromadb():
-    global _chromadb
-    if _chromadb is None:
-        import chromadb
-        _chromadb = chromadb
-    return _chromadb
+DEFAULT_TOP_K = 10
 
+MIN_SIMILARITY = 0.0
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-DEFAULT_MODEL      = "BAAI/bge-m3"
-DEFAULT_TOP_K      = 10
-MIN_SIMILARITY     = 0.0
-RETRIEVER_LABEL    = "bge_m3"
+RETRIEVER_LABEL = "bge_m3"
 
 _COLLECTION_PREFIX = "finbench_"
 
+_BATCH_SIZE = 32
 
-# ── BGERetriever ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Lazy Imports
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_sentence_transformers():
+
+    global _ST_MODEL
+
+    if _ST_MODEL is None:
+
+        import sentence_transformers
+
+        _ST_MODEL = (
+            sentence_transformers
+        )
+
+    return _ST_MODEL
+
+
+def get_chromadb():
+
+    global _CHROMADB
+
+    if _CHROMADB is None:
+
+        import chromadb
+
+        _CHROMADB = chromadb
+
+    return _CHROMADB
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def normalize_query(
+    query: str,
+) -> str:
+
+    return re.sub(
+        r"\s+",
+        " ",
+        query.strip().lower(),
+    )
+
+
+def deduplicate_results(
+    results: List[Dict],
+) -> List[Dict]:
+
+    seen = set()
+
+    unique = []
+
+    for item in results:
+
+        text = (
+            item.get("text", "")
+            .strip()
+            .lower()
+        )
+
+        if not text:
+            continue
+
+        key = hash(text)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique.append(item)
+
+    return unique
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BGERetriever
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 class BGERetriever:
-    """N08 BGE-M3 Semantic Retriever."""
 
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
-        top_k:      int = DEFAULT_TOP_K,
-        data_dir:   str = "data",
-    ) -> None:
+        top_k: int = DEFAULT_TOP_K,
+        data_dir: str = "data",
+    ):
+
         self.model_name = model_name
-        self.top_k      = top_k
-        self.data_dir   = data_dir
-        self._model     = None
-        self._client    = None
-        # Bug #8: respect DISABLE_BGE / DISABLE_CHROMADB env vars
-        self._disabled  = bool(os.environ.get("DISABLE_BGE")) or \
-                          bool(os.environ.get("DISABLE_CHROMADB"))
+
+        self.top_k = top_k
+
+        self.data_dir = data_dir
+
+        self._model = None
+
+        self._client = None
+
+        self._disabled = bool(
+            os.environ.get(
+                "DISABLE_BGE"
+            )
+        ) or bool(
+            os.environ.get(
+                "DISABLE_CHROMADB"
+            )
+        )
+
         if self._disabled:
-            logger.info(
-                "N08: BGE-M3 disabled (DISABLE_BGE or DISABLE_CHROMADB set)"
+
+            logger.warning(
+                "[BGE] Disabled via environment"
             )
 
-    # ── LangGraph pipeline node entry point ───────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # LangGraph Node
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def run(self, state) -> object:
-        """LangGraph N08 node entry point."""
-        query      = getattr(state, "query",               "") or ""
-        collection = getattr(state, "chromadb_collection", "") or ""
+    def run(self, state):
+
+        query = getattr(
+            state,
+            "query",
+            "",
+        ) or ""
+
+        collection = getattr(
+            state,
+            "chromadb_collection",
+            "",
+        ) or ""
 
         if not query:
-            logger.warning("N08 BGE-M3: empty query — returning empty results")
+
+            logger.warning(
+                "[BGE] Empty query"
+            )
+
             state.retrieval_stage_1 = []
+
             return state
 
         if not collection:
-            logger.warning("N08 BGE-M3: no chromadb_collection in state")
+
+            logger.warning(
+                "[BGE] Missing collection"
+            )
+
             state.retrieval_stage_1 = []
+
             return state
 
         results = self.retrieve(
-            query           = query,
-            collection_name = collection,
-            data_dir        = self.data_dir,
-            top_k           = self.top_k,
+            query=query,
+            collection_name=collection,
+            data_dir=self.data_dir,
+            top_k=self.top_k,
         )
 
-        state.retrieval_stage_1 = results
-        logger.info(
-            "N08 BGE-M3: query='%s...' | collection=%s | results=%d",
-            query[:50], collection, len(results),
+        state.retrieval_stage_1 = (
+            results
         )
+
+        state.bge_results = (
+            results
+        )
+
+        logger.info(
+            "[BGE] query='%s' results=%d",
+            query[:50],
+            len(results),
+        )
+
         return state
 
-    # ── Core retrieval method ─────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Retrieve
+    # ─────────────────────────────────────────────────────────────────────────
 
     def retrieve(
         self,
-        query:           str,
+        query: str,
         collection_name: str,
-        data_dir:        str  = "data",
-        top_k:           int  = DEFAULT_TOP_K,
+        data_dir: str = "data",
+        top_k: int = DEFAULT_TOP_K,
     ) -> List[Dict]:
-        """Embed query and search ChromaDB collection.
 
-        Bug #8: check collection EXISTS before loading the BGE model.
-        """
-        if not query or not collection_name:
+        if not query:
+            return []
+
+        if not collection_name:
             return []
 
         if self._disabled:
-            logger.warning("N08: BGE-M3 disabled — returning empty")
+
+            logger.warning(
+                "[BGE] Disabled"
+            )
+
             return []
 
         try:
-            # Check collection exists FIRST (cheap) before loading model (expensive)
-            collection = self._load_collection(collection_name, data_dir)
+
+            collection = (
+                self._load_collection(
+                    collection_name,
+                    data_dir,
+                )
+            )
+
             if collection is None:
+
                 logger.warning(
-                    "N08: collection '%s' not found — skipping model load",
+                    "[BGE] Collection missing: %s",
                     collection_name,
                 )
+
                 return []
 
-            # Only NOW do we load the 1.5GB model
             model = self._load_model()
 
-            # Embed the query — BGE-M3 instruction prefix improves retrieval
-            query_with_instruction = (
-                f"Represent this sentence for searching relevant passages: {query}"
+            query = normalize_query(
+                query
             )
-            query_embedding = model.encode(
-                query_with_instruction,
+
+            query_instruction = (
+                "Represent this sentence "
+                "for searching relevant passages: "
+                f"{query}"
+            )
+
+            embedding = model.encode(
+                query_instruction,
                 normalize_embeddings=True,
                 show_progress_bar=False,
             ).tolist()
 
-            # Query ChromaDB
-            chroma_results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(top_k, collection.count()),
-                include=["documents", "metadatas", "distances"],
+            results = collection.query(
+                query_embeddings=[
+                    embedding
+                ],
+                n_results=min(
+                    top_k,
+                    collection.count(),
+                ),
+                include=[
+                    "documents",
+                    "metadatas",
+                    "distances",
+                ],
             )
 
-            return self._format_results(chroma_results, top_k)
+            formatted = (
+                self._format_results(
+                    results,
+                    top_k,
+                )
+            )
+
+            formatted = (
+                deduplicate_results(
+                    formatted
+                )
+            )
+
+            return formatted
 
         except Exception as exc:
-            logger.error("N08 BGE-M3 retrieve error: %s", exc, exc_info=True)
+
+            logger.error(
+                "[BGE] Retrieve failed: %s",
+                exc,
+                exc_info=True,
+            )
+
             return []
 
-    # ── Index building ────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Build Collection
+    # ─────────────────────────────────────────────────────────────────────────
 
     def build_collection(
         self,
-        chunks:          List[Dict],
+        chunks: List[Dict],
         collection_name: str,
-        data_dir:        str = "data",
+        data_dir: str = "data",
     ) -> bool:
-        """Embed all chunks and store in ChromaDB collection.
 
-        Bug #8: respect DISABLE_BGE env var.
-        """
         if not chunks:
-            logger.warning("N08: No chunks provided — skipping collection build")
+
+            logger.warning(
+                "[BGE] No chunks"
+            )
+
             return False
 
         if self._disabled:
-            logger.warning("N08: BGE-M3 disabled — skipping collection build")
+
+            logger.warning(
+                "[BGE] Disabled"
+            )
+
             return False
 
         try:
-            model      = self._load_model()
-            client     = self._get_client(data_dir)
 
-            # Delete existing collection if rebuilding
+            model = self._load_model()
+
+            client = self._get_client(
+                data_dir
+            )
+
             try:
-                client.delete_collection(name=collection_name)
-                logger.info("N08: Deleted existing collection '%s'", collection_name)
+
+                client.delete_collection(
+                    name=collection_name
+                )
+
             except Exception:
                 pass
 
-            collection = client.create_collection(
-                name     = collection_name,
-                metadata = {"hnsw:space": "cosine"},
+            collection = (
+                client.create_collection(
+                    name=collection_name,
+                    metadata={
+                        "hnsw:space": "cosine"
+                    },
+                )
             )
 
-            # Batch embed for efficiency
-            batch_size = 32
-            texts      = [c.get("text", "") for c in chunks]
-            ids        = [c.get("chunk_id", f"chunk_{i}") for i, c in enumerate(chunks)]
-            metadatas  = [self._build_metadata(c) for c in chunks]
+            texts = [
+                c.get("text", "")
+                for c in chunks
+            ]
 
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i:i + batch_size]
-                batch_ids   = ids[i:i + batch_size]
-                batch_meta  = metadatas[i:i + batch_size]
+            ids = [
+                c.get(
+                    "chunk_id",
+                    f"chunk_{i}",
+                )
+                for i, c in enumerate(
+                    chunks
+                )
+            ]
 
-                instructed = [f"passage: {t}" for t in batch_texts]
-                embeddings = model.encode(
-                    instructed,
-                    normalize_embeddings=True,
-                    show_progress_bar=False,
-                ).tolist()
+            metadata = [
+                self._build_metadata(c)
+                for c in chunks
+            ]
+
+            for i in range(
+                0,
+                len(texts),
+                _BATCH_SIZE,
+            ):
+
+                batch_texts = texts[
+                    i:i + _BATCH_SIZE
+                ]
+
+                batch_ids = ids[
+                    i:i + _BATCH_SIZE
+                ]
+
+                batch_meta = metadata[
+                    i:i + _BATCH_SIZE
+                ]
+
+                instructed = [
+                    f"passage: {t}"
+                    for t in batch_texts
+                ]
+
+                embeddings = (
+                    model.encode(
+                        instructed,
+                        batch_size=_BATCH_SIZE,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    ).tolist()
+                )
 
                 collection.add(
-                    ids        = batch_ids,
-                    documents  = batch_texts,
-                    embeddings = embeddings,
-                    metadatas  = batch_meta,
+                    ids=batch_ids,
+                    documents=batch_texts,
+                    embeddings=embeddings,
+                    metadatas=batch_meta,
                 )
+
                 logger.info(
-                    "N08: Embedded batch %d-%d / %d",
-                    i, min(i + batch_size, len(texts)), len(texts),
+                    "[BGE] Embedded %d/%d",
+                    min(
+                        i + _BATCH_SIZE,
+                        len(texts),
+                    ),
+                    len(texts),
                 )
 
             logger.info(
-                "N08: Collection '%s' built — %d chunks embedded",
-                collection_name, len(chunks),
+                "[BGE] Collection built: %s",
+                collection_name,
             )
+
             return True
 
         except Exception as exc:
-            logger.error("N08 build_collection error: %s", exc, exc_info=True)
+
+            logger.error(
+                "[BGE] Build failed: %s",
+                exc,
+                exc_info=True,
+            )
+
             return False
 
-    # ── LangChain compatibility ───────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # LangChain
+    # ─────────────────────────────────────────────────────────────────────────
 
     def as_langchain_retriever(
         self,
         collection_name: str,
-        data_dir:        str = "data",
-        top_k:           int = DEFAULT_TOP_K,
+        data_dir: str = "data",
+        top_k: int = DEFAULT_TOP_K,
     ):
-        """Return a LangChain-compatible retriever wrapping this BGERetriever."""
+
         return BGELangChainRetriever(
-            bge_retriever   = self,
-            collection_name = collection_name,
-            data_dir        = data_dir,
-            top_k           = top_k,
+            bge_retriever=self,
+            collection_name=collection_name,
+            data_dir=data_dir,
+            top_k=top_k,
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Collection Checks
+    # ─────────────────────────────────────────────────────────────────────────
 
     def collection_exists(
         self,
         collection_name: str,
-        data_dir:        str = "data",
+        data_dir: str = "data",
     ) -> bool:
-        """Check if a ChromaDB collection exists."""
+
         try:
-            client = self._get_client(data_dir)
-            names  = [c.name for c in client.list_collections()]
-            return collection_name in names
+
+            client = self._get_client(
+                data_dir
+            )
+
+            names = [
+                c.name
+                for c in client.list_collections()
+            ]
+
+            return (
+                collection_name
+                in names
+            )
+
         except Exception:
+
             return False
 
     def get_collection_count(
         self,
         collection_name: str,
-        data_dir:        str = "data",
+        data_dir: str = "data",
     ) -> int:
-        """Return number of documents in a collection."""
+
         try:
-            col = self._load_collection(collection_name, data_dir)
-            return col.count() if col is not None else 0
+
+            collection = (
+                self._load_collection(
+                    collection_name,
+                    data_dir,
+                )
+            )
+
+            return (
+                collection.count()
+                if collection
+                else 0
+            )
+
         except Exception:
+
             return 0
 
-    # ── Private helpers ───────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Private
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _load_model(self):
-        """Lazy load the sentence-transformers model.
 
-        Bug E (S19): auto-detect GPU when available (Colab/cloud).
-        Bug G (S21): memory-aware loading.
-          - If GPU has < 2GB free, use float16 to halve memory footprint
-          - If GPU has < 1GB free OR float16 OOMs, fall back to CPU
-          - Set BGE_DEVICE=cpu to force CPU (skips all GPU attempts)
-          - Set BGE_DEVICE=cuda to force CUDA without fallback
-          - Set BGE_FP16=0 to disable float16 (legacy mode)
-        """
         if self._model is not None:
             return self._model
 
-        st = _get_sentence_transformers()
-        forced = os.environ.get("BGE_DEVICE", "").strip().lower()
-        allow_fp16 = os.environ.get("BGE_FP16", "1") != "0"
+        st = (
+            get_sentence_transformers()
+        )
 
-        # ── Determine candidate device ──────────────────────────────────
-        if forced in ("cpu", "cuda", "mps"):
+        forced = os.environ.get(
+            "BGE_DEVICE",
+            "",
+        ).strip().lower()
+
+        allow_fp16 = (
+            os.environ.get(
+                "BGE_FP16",
+                "1",
+            ) != "0"
+        )
+
+        device = "cpu"
+
+        if forced in (
+            "cpu",
+            "cuda",
+            "mps",
+        ):
+
             device = forced
-            logger.info("N08: BGE_DEVICE=%s forced", forced)
+
         else:
+
             try:
+
                 import torch
-                if torch.cuda.is_available():
+
+                if (
+                    torch.cuda.is_available()
+                ):
                     device = "cuda"
-                else:
-                    device = "cpu"
+
             except Exception:
-                device = "cpu"
+                pass
 
-        # ── If CUDA, check available memory and choose dtype ────────────
         use_fp16 = False
+
         if device == "cuda":
+
             try:
+
                 import torch
-                free_bytes, total_bytes = torch.cuda.mem_get_info()
-                free_gb  = free_bytes  / 1e9
-                total_gb = total_bytes / 1e9
-                logger.info(
-                    "N08: GPU memory check — %.2f GB free / %.2f GB total",
-                    free_gb, total_gb,
+
+                free_bytes, total_bytes = (
+                    torch.cuda.mem_get_info()
                 )
+
+                free_gb = (
+                    free_bytes / 1e9
+                )
+
                 if free_gb < 1.0:
+
                     logger.warning(
-                        "N08: GPU memory <1GB free — falling back to CPU"
+                        "[BGE] GPU low memory → CPU"
                     )
+
                     device = "cpu"
-                elif free_gb < 2.5 and allow_fp16:
+
+                elif (
+                    free_gb < 2.5
+                    and allow_fp16
+                ):
+
                     use_fp16 = True
-                    logger.info(
-                        "N08: GPU memory tight — using float16 (halves memory)"
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "N08: GPU memory check failed (%s) — proceeding anyway",
-                    exc,
-                )
 
-        # ── Load model with retry on OOM ────────────────────────────────
+            except Exception:
+                pass
+
         logger.info(
-            "N08: Loading model '%s' on '%s' (fp16=%s) ...",
-            self.model_name, device, use_fp16,
+            "[BGE] Loading model "
+            "device=%s fp16=%s",
+            device,
+            use_fp16,
         )
+
         try:
-            kwargs = {"device": device}
-            if use_fp16 and device == "cuda":
-                # SentenceTransformer doesn't take torch_dtype directly
-                # in older versions — use model_kwargs which forwards
-                # to underlying transformers.AutoModel
+
+            kwargs = {
+                "device": device
+            }
+
+            if (
+                use_fp16
+                and device == "cuda"
+            ):
+
                 import torch
-                kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
-            self._model = st.SentenceTransformer(self.model_name, **kwargs)
+
+                kwargs[
+                    "model_kwargs"
+                ] = {
+                    "torch_dtype": torch.float16
+                }
+
+            self._model = (
+                st.SentenceTransformer(
+                    self.model_name,
+                    **kwargs,
+                )
+            )
+
         except Exception as exc:
-            err_str = str(exc).lower()
-            is_oom = ("out of memory" in err_str or "cuda" in err_str)
-            if is_oom and device == "cuda":
-                logger.warning(
-                    "N08: CUDA load failed (%s) — falling back to CPU",
-                    type(exc).__name__,
+
+            logger.warning(
+                "[BGE] GPU load failed: %s",
+                exc,
+            )
+
+            self._model = (
+                st.SentenceTransformer(
+                    self.model_name,
+                    device="cpu",
                 )
-                # Free any partial allocation
-                try:
-                    import torch
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-                device = "cpu"
-                use_fp16 = False
-                self._model = st.SentenceTransformer(
-                    self.model_name, device="cpu",
-                )
-            else:
-                raise
+            )
 
         logger.info(
-            "N08: Model loaded — %s on %s (fp16=%s)",
-            self.model_name, device, use_fp16,
+            "[BGE] Model loaded"
         )
+
         return self._model
 
-    def _get_client(self, data_dir: str):
-        """Get or create ChromaDB persistent client."""
-        chromadb_path = os.path.join(data_dir, "chromadb")
-        os.makedirs(chromadb_path, exist_ok=True)
-        chroma = _get_chromadb()
-        return chroma.PersistentClient(path=chromadb_path)
+    def _get_client(
+        self,
+        data_dir: str,
+    ):
+
+        chromadb_path = os.path.join(
+            data_dir,
+            "chromadb",
+        )
+
+        os.makedirs(
+            chromadb_path,
+            exist_ok=True,
+        )
+
+        chromadb = get_chromadb()
+
+        return chromadb.PersistentClient(
+            path=chromadb_path
+        )
 
     def _load_collection(
         self,
         collection_name: str,
-        data_dir:        str,
+        data_dir: str,
     ):
-        """Load existing ChromaDB collection. Returns None if not found."""
+
         try:
-            client = self._get_client(data_dir)
-            return client.get_collection(name=collection_name)
+
+            client = self._get_client(
+                data_dir
+            )
+
+            return client.get_collection(
+                name=collection_name
+            )
+
         except Exception:
+
             return None
 
     @staticmethod
-    def _build_metadata(chunk: Dict) -> Dict:
-        """Build ChromaDB metadata dict from a chunk."""
+    def _build_metadata(
+        chunk: Dict,
+    ) -> Dict:
+
         return {
-            "chunk_id":    str(chunk.get("chunk_id",    "")),
-            "company":     str(chunk.get("company",     "UNKNOWN")),
-            "doc_type":    str(chunk.get("doc_type",    "UNKNOWN")),
-            "fiscal_year": str(chunk.get("fiscal_year", "UNKNOWN")),
-            "section":     str(chunk.get("section",     "UNKNOWN")),
-            "page":        int(chunk.get("page",        0)),
-            "prefix":      str(chunk.get("prefix",      "")),
+            "chunk_id": str(
+                chunk.get(
+                    "chunk_id",
+                    "",
+                )
+            ),
+            "company": str(
+                chunk.get(
+                    "company",
+                    "UNKNOWN",
+                )
+            ),
+            "doc_type": str(
+                chunk.get(
+                    "doc_type",
+                    "UNKNOWN",
+                )
+            ),
+            "fiscal_year": str(
+                chunk.get(
+                    "fiscal_year",
+                    "UNKNOWN",
+                )
+            ),
+            "section": str(
+                chunk.get(
+                    "section",
+                    "UNKNOWN",
+                )
+            ),
+            "page": int(
+                chunk.get(
+                    "page",
+                    0,
+                )
+            ),
+            "prefix": str(
+                chunk.get(
+                    "prefix",
+                    "",
+                )
+            ),
         }
 
     @staticmethod
-    def _format_results(chroma_results: Dict, top_k: int) -> List[Dict]:
-        """Convert raw ChromaDB query results to pipeline-standard format."""
+    def _format_results(
+        chroma_results: Dict,
+        top_k: int,
+    ) -> List[Dict]:
+
         formatted = []
 
-        documents = chroma_results.get("documents", [[]])[0]
-        metadatas = chroma_results.get("metadatas", [[]])[0]
-        distances = chroma_results.get("distances", [[]])[0]
+        documents = (
+            chroma_results.get(
+                "documents",
+                [[]],
+            )[0]
+        )
 
-        for rank, (doc, meta, dist) in enumerate(
-            zip(documents, metadatas, distances), start=1
+        metadatas = (
+            chroma_results.get(
+                "metadatas",
+                [[]],
+            )[0]
+        )
+
+        distances = (
+            chroma_results.get(
+                "distances",
+                [[]],
+            )[0]
+        )
+
+        for rank, (
+            doc,
+            meta,
+            dist,
+        ) in enumerate(
+            zip(
+                documents,
+                metadatas,
+                distances,
+            ),
+            start=1,
         ):
-            similarity = max(0.0, 1.0 - float(dist))
 
-            result = {
-                "text":        doc,
-                "chunk_id":    meta.get("chunk_id",    ""),
-                "rank":        rank,
-                "bge_score":   round(similarity, 6),
-                "retriever":   RETRIEVER_LABEL,
-                "company":     meta.get("company",     "UNKNOWN"),
-                "doc_type":    meta.get("doc_type",    "UNKNOWN"),
-                "fiscal_year": meta.get("fiscal_year", "UNKNOWN"),
-                "section":     meta.get("section",     "UNKNOWN"),
-                "page":        meta.get("page",         0),
-                "prefix":      meta.get("prefix",      ""),
-            }
-            formatted.append(result)
+            similarity = max(
+                0.0,
+                1.0 - float(dist),
+            )
 
-            if rank >= top_k:
+            if (
+                similarity
+                < MIN_SIMILARITY
+            ):
+                continue
+
+            formatted.append(
+                {
+                    "text": doc,
+                    "chunk_id": meta.get(
+                        "chunk_id",
+                        "",
+                    ),
+                    "rank": rank,
+                    "bge_score": round(
+                        similarity,
+                        6,
+                    ),
+                    "retriever": RETRIEVER_LABEL,
+                    "company": meta.get(
+                        "company",
+                        "UNKNOWN",
+                    ),
+                    "doc_type": meta.get(
+                        "doc_type",
+                        "UNKNOWN",
+                    ),
+                    "fiscal_year": meta.get(
+                        "fiscal_year",
+                        "UNKNOWN",
+                    ),
+                    "section": meta.get(
+                        "section",
+                        "UNKNOWN",
+                    ),
+                    "page": meta.get(
+                        "page",
+                        0,
+                    ),
+                    "prefix": meta.get(
+                        "prefix",
+                        "",
+                    ),
+                }
+            )
+
+            if (
+                len(formatted)
+                >= top_k
+            ):
                 break
 
         return formatted
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LangChain Wrapper
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── LangChain compatibility wrapper ──────────────────────────────────────────
 
 class BGELangChainRetriever:
-    """Thin wrapper making BGERetriever compatible with LangChain's
-    retriever interface (used by N09 EnsembleRetriever)."""
 
     def __init__(
         self,
-        bge_retriever:   BGERetriever,
+        bge_retriever: BGERetriever,
         collection_name: str,
-        data_dir:        str = "data",
-        top_k:           int = DEFAULT_TOP_K,
-    ) -> None:
-        self._retriever      = bge_retriever
-        self._collection     = collection_name
-        self._data_dir       = data_dir
-        self._top_k          = top_k
+        data_dir: str = "data",
+        top_k: int = DEFAULT_TOP_K,
+    ):
 
-    def invoke(self, query: str) -> List[Any]:
-        """LangChain-compatible invoke method."""
-        from langchain_core.documents import Document
+        self._retriever = (
+            bge_retriever
+        )
 
-        results = self._retriever.retrieve(
-            query           = query,
-            collection_name = self._collection,
-            data_dir        = self._data_dir,
-            top_k           = self._top_k,
+        self._collection = (
+            collection_name
+        )
+
+        self._data_dir = data_dir
+
+        self._top_k = top_k
+
+    def invoke(
+        self,
+        query: str,
+    ):
+
+        try:
+
+            from langchain_core.documents import (
+                Document,
+            )
+
+        except Exception:
+
+            logger.warning(
+                "[BGE] LangChain unavailable"
+            )
+
+            return []
+
+        results = (
+            self._retriever.retrieve(
+                query=query,
+                collection_name=self._collection,
+                data_dir=self._data_dir,
+                top_k=self._top_k,
+            )
         )
 
         return [
             Document(
-                page_content = r["text"],
-                metadata     = {
-                    "chunk_id":    r["chunk_id"],
-                    "bge_score":   r["bge_score"],
-                    "rank":        r["rank"],
-                    "retriever":   r["retriever"],
-                    "company":     r["company"],
-                    "doc_type":    r["doc_type"],
-                    "fiscal_year": r["fiscal_year"],
-                    "section":     r["section"],
-                    "page":        r["page"],
+                page_content=r["text"],
+                metadata={
+                    "chunk_id": r[
+                        "chunk_id"
+                    ],
+                    "bge_score": r[
+                        "bge_score"
+                    ],
+                    "rank": r["rank"],
+                    "retriever": r[
+                        "retriever"
+                    ],
+                    "company": r[
+                        "company"
+                    ],
+                    "doc_type": r[
+                        "doc_type"
+                    ],
+                    "fiscal_year": r[
+                        "fiscal_year"
+                    ],
+                    "section": r[
+                        "section"
+                    ],
+                    "page": r["page"],
                 },
             )
             for r in results
         ]
 
-    def get_relevant_documents(self, query: str) -> List[Any]:
-        """Alias for older LangChain versions."""
+    def get_relevant_documents(
+        self,
+        query: str,
+    ):
+
         return self.invoke(query)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Convenience Wrapper
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Convenience wrapper for LangGraph N08 node ───────────────────────────────
 
-def run_bge(state, data_dir: str = "data") -> object:
-    """Convenience wrapper used by the LangGraph pipeline node N08.
+def run_bge(
+    state,
+    data_dir: str = "data",
+):
 
-    Bug #3 fix: if state has chromadb_data_dir, use that.
-    """
-    state_data_dir = getattr(state, "chromadb_data_dir", "") or ""
-    effective_dir = state_data_dir if state_data_dir else data_dir
+    state_data_dir = getattr(
+        state,
+        "chromadb_data_dir",
+        "",
+    ) or ""
+
+    effective_dir = (
+        state_data_dir
+        if state_data_dir
+        else data_dir
+    )
 
     retriever = BGERetriever(
-        model_name = DEFAULT_MODEL,
-        top_k      = DEFAULT_TOP_K,
-        data_dir   = effective_dir,
+        model_name=DEFAULT_MODEL,
+        top_k=DEFAULT_TOP_K,
+        data_dir=effective_dir,
     )
+
     return retriever.run(state)

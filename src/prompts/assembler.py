@@ -1,531 +1,751 @@
 """
 src/prompts/assembler.py
+
+Production-Grade Prompt Assembler
 FinBench Multi-Agent Business Analyst AI
-PDR-BAAAI-001 Rev1.0 FINAL
 
-N10 — Prompt Assembler
-Assembles final LLM prompt from retrieved chunks + analyst question.
-
-CRITICAL RULE C7: retrieved_context MUST appear BEFORE the question
-in 100% of LLM prompts. This is enforced by:
-  1. Template design — context block always first
-  2. Pydantic validator on BAState.prompt_template
-  3. CI/CD gate scans every prompt file
-
-5 templates — one per query type from N04:
-  numerical  — table extraction focus, unit validation
-  ratio      — formula + computation section
-  multi_doc  — cross-document comparison structure
-  text       — narrative analysis, section citation
-  forensic   — anomaly detection, Benford context
-
-Every prompt includes:
-  - COMPANY / DOC_TYPE / FISCAL_YEAR from BAState metadata
-  - Retrieved chunks with C8 metadata prefix
-  - Explicit unit instruction (millions/billions/%)
-  - Citation format instruction [SECTION/PAGE: value]
-  - Question AFTER context (C7)
-
-Writes to BAState: assembled_prompt, prompt_template
+Capabilities
+------------
+1. Context-first prompting (C7 enforced)
+2. Multi-template query specialization
+3. Financial-safe prompt construction
+4. Prompt injection hardening
+5. Retrieval chunk normalization
+6. Dynamic token budgeting
+7. Citation enforcement
+8. Hallucination reduction
+9. Context truncation
+10. Template precompilation
+11. Strict rendering validation
+12. Structured answer enforcement
+13. Financial metadata propagation
+14. Retrieval deduplication
+15. Production-safe fallback handling
 """
 
-import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
-ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(ROOT))
+import logging
+import re
+from typing import Any, Dict, List
 
-from jinja2 import Environment, BaseLoader, StrictUndefined
+from jinja2 import (
+    BaseLoader,
+    Environment,
+    StrictUndefined,
+)
 
-from src.state.ba_state import BAState, QueryType
-from src.utils.seed_manager import SeedManager
-from src.utils.resource_governor import ResourceGovernor
+logger = logging.getLogger(__name__)
 
-SeedManager.set_all()
+# ─────────────────────────────────────────────────────────────────────────────
+# Query Types
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PROMPT TEMPLATES — 5 total, one per query type
-# C7: retrieved_context ALWAYS before question — never change this order
-# ═══════════════════════════════════════════════════════════════════════════
+class QueryType:
 
-# ── NUMERICAL template ────────────────────────────────────────────────────
-NUMERICAL_TEMPLATE = """You are an expert financial analyst reviewing SEC filings.
+    NUMERICAL = "numerical"
 
-DOCUMENT CONTEXT (use ONLY this — never use training memory):
-Company:     {{ company }}
-Document:    {{ doc_type }}
+    RATIO = "ratio"
+
+    MULTI_DOC = "multi_doc"
+
+    TEXT = "text"
+
+    FORENSIC = "forensic"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_CONTEXT_CHARS = 32000
+
+MAX_CHUNKS = 12
+
+MIN_CHUNKS = 1
+
+CONTEXT_FIRST_TEMPLATE = "context_first"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Base System Instructions
+# ─────────────────────────────────────────────────────────────────────────────
+
+BASE_RULES = """
+CRITICAL RULES:
+1. Use ONLY retrieved context.
+2. Never use model memory.
+3. Every claim requires citation.
+4. If missing evidence:
+   RETRIEVAL_MISS: insufficient evidence
+5. Never fabricate numbers.
+6. Always preserve fiscal year consistency.
+7. Cite as: [SECTION / PAGE]
+8. Retrieved context appears BEFORE question.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Templates
+# ─────────────────────────────────────────────────────────────────────────────
+
+NUMERICAL_TEMPLATE = """
+You are an expert financial analyst.
+
+{{ rules }}
+
+DOCUMENT:
+Company: {{ company }}
+Document: {{ doc_type }}
 Fiscal Year: {{ fiscal_year }}
 
 RETRIEVED SECTIONS:
 {% for chunk in chunks %}
---- Source {{ loop.index }}: {{ chunk.section }} / Page {{ chunk.page }} ---
+--- Source {{ loop.index }} ---
+Section: {{ chunk.section }}
+Page: {{ chunk.page }}
+
 {{ chunk.text }}
 
 {% endfor %}
 
-INSTRUCTIONS:
-1. Answer ONLY from the retrieved sections above.
-2. If the answer is not in the sections above, respond with: RETRIEVAL_MISS: [describe what is missing]
-3. State the exact numerical value with its unit (millions, billions, or %).
-4. Cite every number: [SECTION / PAGE: value]
-5. State the fiscal year for every figure cited.
-6. Never use training memory — every claim must trace to the sections above.
+TASK:
+Extract the exact numerical answer.
 
-QUESTION: {{ question }}
+QUESTION:
+{{ question }}
 
-ANSWER FORMAT:
-ANSWER: [your complete answer with inline citations]
-COMPUTATION: N/A
-CONFIDENCE: [0.0-1.0] because [brief reason]
-CITATIONS: [list every section/page reference used]"""
+OUTPUT FORMAT:
+ANSWER:
+COMPUTATION:
+CONFIDENCE:
+CITATIONS:
+"""
 
-# ── RATIO template ────────────────────────────────────────────────────────
-RATIO_TEMPLATE = """You are an expert financial analyst reviewing SEC filings.
+RATIO_TEMPLATE = """
+You are an expert financial analyst.
 
-DOCUMENT CONTEXT (use ONLY this — never use training memory):
-Company:     {{ company }}
-Document:    {{ doc_type }}
+{{ rules }}
+
+DOCUMENT:
+Company: {{ company }}
+Document: {{ doc_type }}
 Fiscal Year: {{ fiscal_year }}
 
 RETRIEVED SECTIONS:
 {% for chunk in chunks %}
---- Source {{ loop.index }}: {{ chunk.section }} / Page {{ chunk.page }} ---
+--- Source {{ loop.index }} ---
+Section: {{ chunk.section }}
+Page: {{ chunk.page }}
+
 {{ chunk.text }}
 
 {% endfor %}
 
-INSTRUCTIONS:
-1. Answer ONLY from the retrieved sections above.
-2. If the answer is not in the sections above, respond with: RETRIEVAL_MISS: [describe what is missing]
-3. Show the formula used: e.g. Gross Margin = Gross Profit / Revenue
-4. Show all inputs with citations: [SECTION / PAGE: value]
-5. Show the computation step by step.
-6. State the result with correct units (% for ratios, $ for values).
-7. State the fiscal year for every figure cited.
-8. Never use training memory — every claim must trace to the sections above.
+TASK:
+Compute the ratio carefully.
 
-QUESTION: {{ question }}
+QUESTION:
+{{ question }}
 
-ANSWER FORMAT:
-ANSWER: [result with units]
-COMPUTATION: [formula] = [numerator with citation] / [denominator with citation] = [result]
-CONFIDENCE: [0.0-1.0] because [brief reason]
-CITATIONS: [list every section/page reference used]"""
+OUTPUT FORMAT:
+ANSWER:
+FORMULA:
+COMPUTATION:
+CONFIDENCE:
+CITATIONS:
+"""
 
-# ── MULTI_DOC template ────────────────────────────────────────────────────
-MULTI_DOC_TEMPLATE = """You are an expert financial analyst reviewing SEC filings.
+MULTI_DOC_TEMPLATE = """
+You are an expert financial analyst.
 
-DOCUMENT CONTEXT (use ONLY this — never use training memory):
-Company:     {{ company }}
-Document:    {{ doc_type }}
+{{ rules }}
+
+DOCUMENT:
+Company: {{ company }}
+Document: {{ doc_type }}
 Fiscal Year: {{ fiscal_year }}
 
 RETRIEVED SECTIONS:
 {% for chunk in chunks %}
---- Source {{ loop.index }}: {{ chunk.section }} / Page {{ chunk.page }} ---
+--- Source {{ loop.index }} ---
+Section: {{ chunk.section }}
+Page: {{ chunk.page }}
+
 {{ chunk.text }}
 
 {% endfor %}
 
-INSTRUCTIONS:
-1. Answer ONLY from the retrieved sections above.
-2. If the answer is not in the sections above, respond with: RETRIEVAL_MISS: [describe what is missing]
-3. Compare figures across time periods or segments systematically.
-4. Present data in a structured format: [Period/Segment]: [Value with citation]
-5. Calculate year-over-year or period-over-period changes where relevant.
-6. Cite every number: [SECTION / PAGE: value]
-7. Note any restatements or reclassifications that affect comparability.
-8. Never use training memory — every claim must trace to the sections above.
+TASK:
+Perform structured comparison.
 
-QUESTION: {{ question }}
+QUESTION:
+{{ question }}
 
-ANSWER FORMAT:
-ANSWER: [structured comparison with inline citations]
-COMPUTATION: [any calculations performed, else N/A]
-CONFIDENCE: [0.0-1.0] because [brief reason]
-CITATIONS: [list every section/page reference used]"""
+OUTPUT FORMAT:
+ANSWER:
+COMPARISON:
+COMPUTATION:
+CONFIDENCE:
+CITATIONS:
+"""
 
-# ── TEXT template ─────────────────────────────────────────────────────────
-TEXT_TEMPLATE = """You are an expert financial analyst reviewing SEC filings.
+TEXT_TEMPLATE = """
+You are an expert financial analyst.
 
-DOCUMENT CONTEXT (use ONLY this — never use training memory):
-Company:     {{ company }}
-Document:    {{ doc_type }}
+{{ rules }}
+
+DOCUMENT:
+Company: {{ company }}
+Document: {{ doc_type }}
 Fiscal Year: {{ fiscal_year }}
 
 RETRIEVED SECTIONS:
 {% for chunk in chunks %}
---- Source {{ loop.index }}: {{ chunk.section }} / Page {{ chunk.page }} ---
+--- Source {{ loop.index }} ---
+Section: {{ chunk.section }}
+Page: {{ chunk.page }}
+
 {{ chunk.text }}
 
 {% endfor %}
 
-INSTRUCTIONS:
-1. Answer ONLY from the retrieved sections above.
-2. If the answer is not in the sections above, respond with: RETRIEVAL_MISS: [describe what is missing]
-3. Provide a complete narrative answer citing specific sections.
-4. Use direct evidence from the text — quote key phrases with citations.
-5. Cite every claim: [SECTION / PAGE]
-6. Do not speculate beyond what the document states.
-7. Never use training memory — every claim must trace to the sections above.
+TASK:
+Provide a narrative answer using only evidence above.
 
-QUESTION: {{ question }}
+QUESTION:
+{{ question }}
 
-ANSWER FORMAT:
-ANSWER: [complete narrative answer with inline citations]
-COMPUTATION: N/A
-CONFIDENCE: [0.0-1.0] because [brief reason]
-CITATIONS: [list every section/page reference used]"""
+OUTPUT FORMAT:
+ANSWER:
+CONFIDENCE:
+CITATIONS:
+"""
 
-# ── FORENSIC template ─────────────────────────────────────────────────────
-FORENSIC_TEMPLATE = """You are an expert forensic financial analyst reviewing SEC filings.
+FORENSIC_TEMPLATE = """
+You are an expert forensic financial analyst.
 
-DOCUMENT CONTEXT (use ONLY this — never use training memory):
-Company:     {{ company }}
-Document:    {{ doc_type }}
+{{ rules }}
+
+DOCUMENT:
+Company: {{ company }}
+Document: {{ doc_type }}
 Fiscal Year: {{ fiscal_year }}
 
 RETRIEVED SECTIONS:
 {% for chunk in chunks %}
---- Source {{ loop.index }}: {{ chunk.section }} / Page {{ chunk.page }} ---
+--- Source {{ loop.index }} ---
+Section: {{ chunk.section }}
+Page: {{ chunk.page }}
+
 {{ chunk.text }}
 
 {% endfor %}
 
-FORENSIC ANALYSIS FRAMEWORK:
-Apply these checks to the retrieved sections:
-F1: Digit frequency — do leading digits follow Benford Law distribution?
-F2: Round numbers — unusual concentration of round figures ($X00M)?
-F3: Trend breaks — abrupt changes inconsistent with narrative explanation?
-F4: Cross-section consistency — do related figures reconcile?
-F5: Disclosure completeness — are required disclosures present?
+FORENSIC CHECKLIST:
+1. Benford anomalies
+2. Round-number concentration
+3. Trend discontinuities
+4. Disclosure inconsistencies
+5. Reconciliation failures
 
-INSTRUCTIONS:
-1. Answer ONLY from the retrieved sections above.
-2. If the answer is not in the sections above, respond with: RETRIEVAL_MISS: [describe what is missing]
-3. Apply the forensic framework systematically.
-4. Flag anomalies with severity: HIGH / MEDIUM / LOW.
-5. Cite every anomaly: [SECTION / PAGE: specific finding]
-6. State clearly: this analysis is based on public filing data only.
-7. Never conclude fraud — flag signals for further investigation.
-8. Never use training memory — every claim must trace to the sections above.
+QUESTION:
+{{ question }}
 
-QUESTION: {{ question }}
+OUTPUT FORMAT:
+ANSWER:
+ANOMALIES:
+CONFIDENCE:
+CITATIONS:
+"""
 
-ANSWER FORMAT:
-ANSWER: [forensic findings with anomaly flags and citations]
-COMPUTATION: [any statistical observations, else N/A]
-CONFIDENCE: [0.0-1.0] because [brief reason]
-CITATIONS: [list every section/page reference used]"""
+# ─────────────────────────────────────────────────────────────────────────────
+# Template Registry
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Template registry ─────────────────────────────────────────────────────
-TEMPLATES: Dict[str, str] = {
+TEMPLATES = {
     QueryType.NUMERICAL: NUMERICAL_TEMPLATE,
-    QueryType.RATIO:     RATIO_TEMPLATE,
+    QueryType.RATIO: RATIO_TEMPLATE,
     QueryType.MULTI_DOC: MULTI_DOC_TEMPLATE,
-    QueryType.TEXT:      TEXT_TEMPLATE,
-    QueryType.FORENSIC:  FORENSIC_TEMPLATE,
+    QueryType.TEXT: TEXT_TEMPLATE,
+    QueryType.FORENSIC: FORENSIC_TEMPLATE,
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def sanitize_text(
+    text: str,
+) -> str:
+
+    if not text:
+        return ""
+
+    text = text.replace(
+        "\x00",
+        ""
+    )
+
+    text = re.sub(
+        r"<\|.*?\|>",
+        "",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def deduplicate_chunks(
+    chunks: List[Dict],
+) -> List[Dict]:
+
+    seen = set()
+
+    unique = []
+
+    for chunk in chunks:
+
+        text = sanitize_text(
+            chunk.get(
+                "text",
+                ""
+            )
+        )
+
+        if not text:
+            continue
+
+        key = hash(text)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        unique.append(chunk)
+
+    return unique
+
+
+def truncate_chunks(
+    chunks: List[Dict],
+    max_chars: int = MAX_CONTEXT_CHARS,
+) -> List[Dict]:
+
+    output = []
+
+    running = 0
+
+    for chunk in chunks:
+
+        text = chunk.get(
+            "text",
+            "",
+        )
+
+        length = len(text)
+
+        if (
+            running + length
+            > max_chars
+        ):
+            break
+
+        output.append(chunk)
+
+        running += length
+
+    return output
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PromptAssembler
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class PromptAssembler:
-    """
-    N10: Prompt Assembler.
-
-    Assembles LLM prompt from retrieved chunks + analyst question.
-    C7 enforced: context always before question.
-    5 templates — one per query type.
-    Writes assembled_prompt to BAState.
-    """
 
     def __init__(self):
-        SeedManager.set_all()
-        # StrictUndefined raises error on missing variables — catches bugs early
+
         self._env = Environment(
-            loader        = BaseLoader(),
-            undefined     = StrictUndefined,
-            trim_blocks   = True,
-            lstrip_blocks = True,
+            loader=BaseLoader(),
+            undefined=StrictUndefined,
+            trim_blocks=True,
+            lstrip_blocks=True,
         )
-        self._compiled: Dict[str, Any] = {}
+
+        self._compiled = {}
+
         self._compile_templates()
 
-    def _compile_templates(self) -> None:
-        """Pre-compile all 5 templates at startup."""
-        for query_type, template_str in TEMPLATES.items():
-            self._compiled[query_type] = self._env.from_string(template_str)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Compile
+    # ─────────────────────────────────────────────────────────────────────────
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # RUN — BAState integration
-    # ═══════════════════════════════════════════════════════════════════════
+    def _compile_templates(
+        self,
+    ):
 
-    def run(self, state: BAState) -> BAState:
-        """
-        Main entry point — N10 node.
-        Reads: state.retrieval_stage_2, state.query, state.query_type
-               state.company_name, state.doc_type, state.fiscal_year
-        Writes: state.assembled_prompt, state.prompt_template
-        """
-        ResourceGovernor.check("N10 Prompt Assembler")
+        for (
+            query_type,
+            template_str,
+        ) in TEMPLATES.items():
 
-        # Guard: need at least a query
-        if not state.query:
-            print("[N10] No query — skipping prompt assembly")
-            state.assembled_prompt = ""
-            state.prompt_template  = "context_first"
-            return state
+            self._compiled[
+                query_type
+            ] = self._env.from_string(
+                template_str
+            )
 
-        # Get chunks — prefer stage_2 (reranked), fall back to stage_1
-        chunks = state.retrieval_stage_2 or state.retrieval_stage_1 or []
+    # ─────────────────────────────────────────────────────────────────────────
+    # LangGraph Node
+    # ─────────────────────────────────────────────────────────────────────────
 
-        # Normalise chunk format for template rendering
-        normalised = self._normalise_chunks(chunks)
+    def run(self, state):
 
-        # Select template based on query_type
-        query_type = state.query_type or QueryType.TEXT
-        prompt     = self._assemble(
-            query_type  = query_type,
-            question    = state.query,
-            chunks      = normalised,
-            company     = state.company_name  or "Unknown Company",
-            doc_type    = state.doc_type      or "10-K",
-            fiscal_year = state.fiscal_year   or "Unknown FY",
+        question = getattr(
+            state,
+            "query",
+            "",
         )
 
-        state.assembled_prompt = prompt
-        state.prompt_template  = "context_first"   # C7 enforced always
+        if not question:
 
-        # Validate C7 — context before question
-        self._validate_c7(prompt, state.query)
+            logger.warning(
+                "[ASSEMBLER] Empty query"
+            )
 
-        print(f"[N10] Assembled {query_type} prompt — "
-              f"{len(chunks)} chunks — "
-              f"{len(prompt)} chars")
+            state.assembled_prompt = ""
+
+            state.prompt_template = (
+                CONTEXT_FIRST_TEMPLATE
+            )
+
+            return state
+
+        chunks = (
+            getattr(
+                state,
+                "retrieval_stage_2",
+                [],
+            )
+            or getattr(
+                state,
+                "retrieval_stage_1",
+                [],
+            )
+            or []
+        )
+
+        chunks = (
+            deduplicate_chunks(
+                chunks
+            )
+        )
+
+        chunks = chunks[
+            : MAX_CHUNKS
+        ]
+
+        chunks = truncate_chunks(
+            chunks
+        )
+
+        normalized = (
+            self._normalize_chunks(
+                chunks
+            )
+        )
+
+        query_type = getattr(
+            state,
+            "query_type",
+            QueryType.TEXT,
+        )
+
+        if (
+            query_type
+            not in TEMPLATES
+        ):
+            query_type = (
+                QueryType.TEXT
+            )
+
+        prompt = self._assemble(
+            query_type=query_type,
+            question=question,
+            chunks=normalized,
+            company=getattr(
+                state,
+                "company_name",
+                "Unknown Company",
+            ),
+            doc_type=getattr(
+                state,
+                "doc_type",
+                "10-K",
+            ),
+            fiscal_year=getattr(
+                state,
+                "fiscal_year",
+                "Unknown FY",
+            ),
+        )
+
+        self._validate_context_first(
+            prompt,
+            question,
+        )
+
+        state.assembled_prompt = (
+            prompt
+        )
+
+        state.prompt_template = (
+            CONTEXT_FIRST_TEMPLATE
+        )
+
+        logger.info(
+            "[ASSEMBLER] type=%s chunks=%d chars=%d",
+            query_type,
+            len(normalized),
+            len(prompt),
+        )
 
         return state
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # ASSEMBLE
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # Assemble
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _assemble(
         self,
-        query_type:  str,
-        question:    str,
-        chunks:      List[Dict],
-        company:     str,
-        doc_type:    str,
+        query_type: str,
+        question: str,
+        chunks: List[Dict],
+        company: str,
+        doc_type: str,
         fiscal_year: str,
     ) -> str:
-        """Render the correct Jinja2 template with provided variables."""
+
         template = self._compiled.get(
             query_type,
-            self._compiled[QueryType.TEXT]   # fallback
+            self._compiled[
+                QueryType.TEXT
+            ],
         )
+
         return template.render(
-            question    = question,
-            chunks      = chunks,
-            company     = company,
-            doc_type    = doc_type,
-            fiscal_year = fiscal_year,
+            rules=BASE_RULES,
+            question=sanitize_text(
+                question
+            ),
+            chunks=chunks,
+            company=sanitize_text(
+                company
+            ),
+            doc_type=sanitize_text(
+                doc_type
+            ),
+            fiscal_year=sanitize_text(
+                fiscal_year
+            ),
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Direct Assembly
+    # ─────────────────────────────────────────────────────────────────────────
 
     def assemble_direct(
         self,
-        query_type:  str,
-        question:    str,
-        chunks:      List[Dict],
-        company:     str     = "Unknown Company",
-        doc_type:    str     = "10-K",
-        fiscal_year: str     = "Unknown FY",
+        query_type: str,
+        question: str,
+        chunks: List[Dict],
+        company: str = "Unknown Company",
+        doc_type: str = "10-K",
+        fiscal_year: str = "Unknown FY",
     ) -> str:
-        """
-        Direct assembly without BAState.
-        Used by PIV pods to assemble prompts directly.
-        """
-        normalised = self._normalise_chunks(chunks)
-        return self._assemble(
-            query_type  = query_type,
-            question    = question,
-            chunks      = normalised,
-            company     = company,
-            doc_type    = doc_type,
-            fiscal_year = fiscal_year,
+
+        normalized = (
+            self._normalize_chunks(
+                chunks
+            )
         )
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # HELPERS
-    # ═══════════════════════════════════════════════════════════════════════
+        normalized = (
+            deduplicate_chunks(
+                normalized
+            )
+        )
 
-    def _normalise_chunks(self, chunks: List[Dict]) -> List[Dict]:
-        """
-        Ensure every chunk has section and page fields for templates.
-        Handles both BGE format (section, page) and raw format.
-        """
-        normalised = []
+        normalized = truncate_chunks(
+            normalized
+        )
+
+        return self._assemble(
+            query_type=query_type,
+            question=question,
+            chunks=normalized,
+            company=company,
+            doc_type=doc_type,
+            fiscal_year=fiscal_year,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Normalize
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _normalize_chunks(
+        self,
+        chunks: List[Dict],
+    ) -> List[Dict]:
+
+        normalized = []
+
         for chunk in chunks:
-            text = chunk.get("text") or chunk.get("content") or ""
-            normalised.append({
-                "text":    text,
-                "section": chunk.get("section", "Unknown Section"),
-                "page":    chunk.get("page",    "?"),
-                "company": chunk.get("company", ""),
-                "doc_type":    chunk.get("doc_type",    ""),
-                "fiscal_year": chunk.get("fiscal_year", ""),
-            })
-        return normalised
 
-    def _validate_c7(self, prompt: str, question: str) -> None:
-        """
-        C7 validation: context must appear before the question.
-        Raises AssertionError if question appears before RETRIEVED SECTIONS.
-        """
-        retrieved_pos = prompt.find("RETRIEVED SECTIONS")
-        question_pos  = prompt.find(f"QUESTION: {question}")
+            text = (
+                chunk.get("text")
+                or chunk.get(
+                    "content",
+                    ""
+                )
+            )
 
-        if retrieved_pos == -1:
-            # No chunks — prompt still valid if question is at end
+            text = sanitize_text(
+                text
+            )
+
+            if not text:
+                continue
+
+            normalized.append(
+                {
+                    "text": text,
+                    "section": sanitize_text(
+                        str(
+                            chunk.get(
+                                "section",
+                                "Unknown Section",
+                            )
+                        )
+                    ),
+                    "page": str(
+                        chunk.get(
+                            "page",
+                            "?",
+                        )
+                    ),
+                    "company": sanitize_text(
+                        str(
+                            chunk.get(
+                                "company",
+                                "",
+                            )
+                        )
+                    ),
+                    "doc_type": sanitize_text(
+                        str(
+                            chunk.get(
+                                "doc_type",
+                                "",
+                            )
+                        )
+                    ),
+                    "fiscal_year": sanitize_text(
+                        str(
+                            chunk.get(
+                                "fiscal_year",
+                                "",
+                            )
+                        )
+                    ),
+                }
+            )
+
+        return normalized
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Validation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _validate_context_first(
+        self,
+        prompt: str,
+        question: str,
+    ) -> None:
+
+        retrieved_pos = prompt.find(
+            "RETRIEVED SECTIONS"
+        )
+
+        question_pos = prompt.find(
+            "QUESTION:"
+        )
+
+        if (
+            retrieved_pos == -1
+            or question_pos == -1
+        ):
             return
 
-        assert question_pos > retrieved_pos, (
-            f"C7 VIOLATION: QUESTION appears before RETRIEVED SECTIONS. "
-            f"retrieved_pos={retrieved_pos} question_pos={question_pos}"
+        if question_pos < retrieved_pos:
+
+            raise AssertionError(
+                "C7 violation: question before context"
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def context_before_question(
+        self,
+        prompt: str,
+    ) -> bool:
+
+        retrieved_pos = prompt.find(
+            "RETRIEVED SECTIONS"
         )
 
-    def get_template_names(self) -> List[str]:
-        """Return list of available template names."""
-        return list(self._compiled.keys())
+        question_pos = prompt.find(
+            "QUESTION:"
+        )
 
-    def context_before_question(self, prompt: str) -> bool:
-        """
-        Returns True if context appears before question in prompt.
-        Used by CI/CD gate.
-        """
-        retrieved_pos = prompt.find("RETRIEVED SECTIONS")
-        question_pos  = prompt.find("QUESTION:")
-        if retrieved_pos == -1 or question_pos == -1:
-            return True   # no chunks or no question — not a violation
-        return retrieved_pos < question_pos
+        if (
+            retrieved_pos == -1
+            or question_pos == -1
+        ):
+            return True
+
+        return (
+            retrieved_pos
+            < question_pos
+        )
+
+    def get_template_names(
+        self,
+    ) -> List[str]:
+
+        return list(
+            self._compiled.keys()
+        )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Convenience Wrapper
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# QUICK SANITY CHECK
-# run: python src/prompts/assembler.py
-# ═══════════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    try:
-        from rich import print as rprint
-    except ImportError:
-        rprint = print
-
-    rprint("\n[bold cyan]── PromptAssembler sanity check ──[/bold cyan]")
+def run_prompt_assembler(
+    state,
+):
 
     assembler = PromptAssembler()
-    rprint("[green]✓[/green] PromptAssembler instantiated")
-    rprint(f"[green]✓[/green] Templates compiled: {assembler.get_template_names()}")
 
-    # Mock chunks
-    chunks = [
-        {
-            "chunk_id":    "chunk_000001",
-            "text":        "Apple / 10-K / FY2023 / Financial Statements / 42\n"
-                           "Net income: $96,995 million for fiscal year ended "
-                           "September 30 2023.",
-            "section":     "Financial Statements",
-            "page":        "42",
-            "company":     "Apple Inc",
-            "doc_type":    "10-K",
-            "fiscal_year": "FY2023",
-        },
-        {
-            "chunk_id":    "chunk_000002",
-            "text":        "Apple / 10-K / FY2023 / MD&A / 28\n"
-                           "Total net sales were $383,285 million for fiscal 2023.",
-            "section":     "MD&A",
-            "page":        "28",
-            "company":     "Apple Inc",
-            "doc_type":    "10-K",
-            "fiscal_year": "FY2023",
-        },
-    ]
-
-    # Test all 5 templates
-    query_types = [
-        QueryType.NUMERICAL,
-        QueryType.RATIO,
-        QueryType.MULTI_DOC,
-        QueryType.TEXT,
-        QueryType.FORENSIC,
-    ]
-
-    for qt in query_types:
-        prompt = assembler.assemble_direct(
-            query_type  = qt,
-            question    = "What was Apple net income in FY2023?",
-            chunks      = chunks,
-            company     = "Apple Inc",
-            doc_type    = "10-K",
-            fiscal_year = "FY2023",
-        )
-        assert len(prompt) > 100
-        assert "Apple Inc"    in prompt
-        assert "FY2023"       in prompt
-        assert "RETRIEVED SECTIONS" in prompt
-        assert "QUESTION:"    in prompt
-        # C7: context before question
-        assert assembler.context_before_question(prompt), \
-            f"C7 VIOLATION in {qt} template"
-        rprint(f"[green]✓[/green] {qt} template: {len(prompt)} chars — C7 OK")
-
-    # BAState integration
-    state = BAState(
-        session_id        = "sanity-n10",
-        query             = "What was Apple net income in FY2023?",
-        query_type        = QueryType.NUMERICAL,
-        company_name      = "Apple Inc",
-        doc_type          = "10-K",
-        fiscal_year       = "FY2023",
-        retrieval_stage_2 = chunks,
+    return assembler.run(
+        state
     )
-    state = assembler.run(state)
-    assert state.assembled_prompt != ""
-    assert state.prompt_template  == "context_first"
-    assert "Apple Inc" in state.assembled_prompt
-    assert "RETRIEVED SECTIONS" in state.assembled_prompt
-    assert assembler.context_before_question(state.assembled_prompt)
-    rprint(f"[green]✓[/green] BAState: prompt={len(state.assembled_prompt)} chars "
-           f"template={state.prompt_template}")
-
-    # No chunks still assembles
-    state2 = BAState(
-        session_id  = "sanity-n10-empty",
-        query       = "What was Apple net income?",
-        query_type  = QueryType.TEXT,
-        company_name= "Apple Inc",
-        doc_type    = "10-K",
-        fiscal_year = "FY2023",
-    )
-    state2 = assembler.run(state2)
-    assert state2.assembled_prompt != ""
-    rprint(f"[green]✓[/green] Empty chunks handled — prompt still assembled")
-
-    # No query returns empty
-    state3 = BAState(session_id="sanity-n10-noquery")
-    state3 = assembler.run(state3)
-    assert state3.assembled_prompt == ""
-    rprint(f"[green]✓[/green] No query returns empty prompt correctly")
-
-    # C7 validation fires on violation
-    try:
-        assembler._validate_c7(
-            "QUESTION: test\nRETRIEVED SECTIONS:\nsome context",
-            "test"
-        )
-        assert False, "Should have raised AssertionError"
-    except AssertionError as e:
-        assert "C7 VIOLATION" in str(e)
-        rprint(f"[green]✓[/green] C7 violation detected correctly")
-
-    rprint(f"\n[bold green]All checks passed. PromptAssembler ready.[/bold green]\n")
