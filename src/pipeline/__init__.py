@@ -1,3 +1,9 @@
-self.parallel = ParallelExecutor(
-    max_workers=2
-)
+"""
+src.pipeline package
+"""
+
+from .pipeline import FinBenchPipeline
+
+__all__ = [
+    "FinBenchPipeline",
+]
