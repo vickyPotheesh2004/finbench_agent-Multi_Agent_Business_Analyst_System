@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import gc
 import logging
-import os
 import re
+import os
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 from typing import Dict
 from typing import List
 from typing import Optional

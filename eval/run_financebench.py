@@ -4,13 +4,18 @@ from __future__ import annotations
 # Environment
 # ─────────────────────────────────────────────────────────────────────────────
 
+import warnings
+import logging
 import os
 
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["CHROMA_TELEMETRY"] = "False"
-os.environ["CHROMADB_TELEMETRY"] = "False"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+warnings.filterwarnings("ignore")
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("chromadb").setLevel(logging.ERROR)
 
 # Disable GPU embedding contention with Ollama
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"

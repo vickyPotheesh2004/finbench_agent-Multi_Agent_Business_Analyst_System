@@ -78,7 +78,7 @@ pytest-timeout>=2.4
 tqdm>=4.66
 python-dotenv>=1.0
 pyyaml>=6.0
-
+posthog<4.0.0
 # ============================================================================
 # EXCLUDED BY DESIGN:
 #   - openai, anthropic, cohere, google-generativeai   (violates C1)
