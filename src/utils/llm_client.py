@@ -37,7 +37,7 @@ DEFAULT_MODEL = "llama3.1:8b"
 
 FALLBACK_MODEL = "llama3.1:8b"
 
-BASE_URL = "http://localhost:11434"
+BASE_URL = "http://127.0.0.1:11434"
 
 # Increased for FinanceBench
 DEFAULT_TIMEOUT = 180
