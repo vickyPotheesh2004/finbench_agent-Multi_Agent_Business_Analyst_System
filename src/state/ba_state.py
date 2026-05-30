@@ -109,6 +109,11 @@ class BAState(BaseModel):
     sniper_pattern:    str          = ""
     sniper_confidence: float        = 0.0
 
+    # N06b Formula Router (maths_lib deterministic path) — SESSION 16
+    formula_hit:       bool          = False
+    formula_answer:    str           = ""
+    formula_result:    Optional[Dict] = None
+
     # N07 BM25
     bm25_results:      List[Dict]  = Field(default_factory=list)
     bm25_confidence:   float       = 0.0

@@ -103,7 +103,7 @@ def compute_shap_importance(
         top_idxs      = np.argsort(abs_shap)[-10:][::-1]
         top_features  = [
             {
-                "feature":    str(feature_names[i]),
+                "feature":    str(feature_names[i]) if i < len(feature_names) else str(i),
                 "importance": float(abs_shap[i]),
             }
             for i in top_idxs
@@ -113,7 +113,8 @@ def compute_shap_importance(
         top_chunk_idx = np.argsort(chunk_shap)[-5:][::-1]
         top_chunks = []
         for i in top_chunk_idx:
-            if i < len(capped):
+            # FIX (P0): bound by BOTH chunk_shap and capped lengths
+            if i < len(chunk_shap) and i < len(capped):
                 c = capped[i]
                 top_chunks.append({
                     "chunk_id": c.get("chunk_id", c.get("id", str(i))),

@@ -1,0 +1,35 @@
+[
+  {
+    "financebench_id": "financebench_id_03029",
+    "question": "What is the FY2018 capital expenditure amount (in USD millions) for 3M? Give a response to the question by relying on the details shown in the cash flow statement.",
+    "gold": "$1577.00",
+    "predicted": "o provide a reader of 3M\u2019s financial statements with a narrative from the perspective of\nmanagement. 3M\u2019s MD&A is presented in eight sections:\nOverview 15\nResults of Operations 27\nPerformance by Business Segment 32\nPerformance by Geographic Area 38\nCritical Accounting Estimates 39\nNew Accounting Pronouncements 42\nFinancial Condition and Liquidity 43\nFinancial Instruments 50\nITEM 7A Quantitative and Qualitative Disclosures About Market Risk 51\nITEM 8 Financial Statements and Supplementary Data 52",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 51.13,
+    "winning_pod": "SNIPER_ONLY_RETRIEVAL"
+  },
+  {
+    "financebench_id": "financebench_id_04672",
+    "question": "Assume that you are a public equities analyst. Answer the following question by primarily using information that is shown in the balance sheet: what is the year end FY2018 net PPNE for 3M? Answer in USD billions.",
+    "gold": "$8.70",
+    "predicted": "o provide a reader of 3M\u2019s financial statements with a narrative from the perspective of\nmanagement. 3M\u2019s MD&A is presented in eight sections:\nOverview 15\nResults of Operations 27\nPerformance by Business Segment 32\nPerformance by Geographic Area 38\nCritical Accounting Estimates 39\nNew Accounting Pronouncements 42\nFinancial Condition and Liquidity 43\nFinancial Instruments 50\nITEM 7A Quantitative and Qualitative Disclosures About Market Risk 51\nITEM 8 Financial Statements and Supplementary Data 52",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.016,
+    "elapsed_sec": 13.6,
+    "winning_pod": "SNIPER_ONLY_RETRIEVAL"
+  },
+  {
+    "financebench_id": "financebench_id_00499",
+    "question": "Is 3M a capital-intensive business based on FY2022 data?",
+    "gold": "No, the company is managing its CAPEX and Fixed Assets pretty efficiently, which is evident from below key metrics:\nCAPEX/Revenue Ratio: 5.1%\nFixed assets/Total Assets: 20%\nReturn on Assets= 12.4%",
+    "predicted": "; and Consumer. 3M is among the leading manufacturers of products for many of the markets it serves. Most 3M products involve expertise in product development, manufacturing and\nmarketing, and are subject to competition from products manufactured and sold by other technologically oriented companies. Business Segments\n3M manages its operations in four business segments. The reportable segments are Safety and Industrial, Transportation and Electronics, Health Care, and Consumer. 3M\u2019s four\nbusiness",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.069,
+    "elapsed_sec": 12.28,
+    "winning_pod": "SNIPER_ONLY_RETRIEVAL"
+  }
+]

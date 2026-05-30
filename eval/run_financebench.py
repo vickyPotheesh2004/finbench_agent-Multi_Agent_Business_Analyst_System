@@ -800,7 +800,18 @@ def main():
         default=0,
     )
 
+    parser.add_argument(
+        "--sniper-only",
+        action="store_true",
+        help="Skip all LLM pods; Sniper-only fast path",
+    )
+
     args = parser.parse_args()
+
+    if args.sniper_only:
+        os.environ["SNIPER_ONLY"] = "1"
+        os.environ["DISABLE_BGE"] = "1"
+        print("[P0] SNIPER-ONLY mode: LLM + BGE disabled")
 
     print("=" * 80)
     print(

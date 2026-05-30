@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from src.state.ba_state import BAState
@@ -25,6 +26,7 @@ from src.ingestion.chunker import run_chunker
 
 from src.routing.cart_router import run_cart_router
 from src.routing.lr_difficulty import run_lr_difficulty
+from src.routing.formula_router import run_formula_router
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Retrieval
@@ -413,21 +415,47 @@ class FinBenchPipeline:
         )
 
         # ──────────────────────────────────────────────────────────────────────
+        # N06b Formula Router (maths_lib deterministic path)
+        # ──────────────────────────────────────────────────────────────────────
+
+        state = _safe_run(
+            "N06b Formula",
+            run_formula_router,
+            state,
+        )
+
+        if getattr(state, "formula_hit", False):
+
+            logger.info(
+                "[PIPELINE] Formula router answered: %s",
+                getattr(state, "formula_answer", ""),
+            )
+
+            state = _safe_run(
+                "N18 RLEF",
+                run_rlef_engine,
+                state,
+            )
+
+            state = _safe_run(
+                "N19 Output",
+                run_output_generator,
+                state,
+            )
+
+            cleanup_memory()
+
+            return state
+
+        # ──────────────────────────────────────────────────────────────────────
         # Sniper Early Exit
         # ──────────────────────────────────────────────────────────────────────
 
-        if (
-            getattr(
-                state,
-                "sniper_hit",
-                False,
-            )
-            and getattr(
-                state,
-                "sniper_confidence",
-                0.0,
-            ) >= 0.97
-        ):
+        _sniper_only = os.environ.get("SNIPER_ONLY") == "1"
+        _sniper_hit = getattr(state, "sniper_hit", False)
+        _sniper_conf = getattr(state, "sniper_confidence", 0.0)
+
+        if _sniper_hit and (_sniper_only or _sniper_conf >= 0.85):
 
             logger.info(
                 "[PIPELINE] Sniper early exit"
@@ -544,6 +572,43 @@ class FinBenchPipeline:
             run_prompt_assembler,
             state,
         )
+
+        # ──────────────────────────────────────────────────────────────────────
+        # SNIPER-ONLY LLM BYPASS (P0)
+        # ──────────────────────────────────────────────────────────────────────
+        if os.environ.get("SNIPER_ONLY") == "1":
+            # Skip all LLM pods. Use best available retrieval result.
+            _best = ""
+            for _src in (
+                getattr(state, "reranked_chunks", None),
+                getattr(state, "retrieval_stage_2", None),
+                getattr(state, "bm25_results", None),
+            ):
+                if _src:
+                    _c = _src[0]
+                    _best = (
+                        _c.get("text")
+                        or _c.get("page_content")
+                        or ""
+                    ) if isinstance(_c, dict) else str(_c)
+                    if _best:
+                        break
+
+            if getattr(state, "sniper_hit", False) and getattr(state, "sniper_answer", ""):
+                state.final_answer = state.sniper_answer
+                state.final_answer_pre_xgb = state.sniper_answer
+                state.confidence_score = getattr(state, "sniper_confidence", 0.5)
+                state.winning_pod = "SNIPER_ONLY"
+            else:
+                state.final_answer = _best[:500] if _best else "RETRIEVAL_MISS"
+                state.final_answer_pre_xgb = state.final_answer
+                state.confidence_score = 0.1
+                state.winning_pod = "SNIPER_ONLY_RETRIEVAL"
+
+            state = _safe_run("N18 RLEF", run_rlef_engine, state)
+            state = _safe_run("N19 Output", run_output_generator, state)
+            cleanup_memory()
+            return state
 
         # ──────────────────────────────────────────────────────────────────────
         # Pods
