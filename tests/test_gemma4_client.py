@@ -45,19 +45,25 @@ def _mock_ollama(response_text: str):
 
 class TestConstants:
 
-    def test_01_default_model_is_gemma4(self):
-        assert "gemma4" in DEFAULT_MODEL
+    def test_01_default_model_is_llama_3_1(self):
+        # 2026-06-05: DEFAULT_MODEL is llama3.1:8b for C3 compliance,
+        # NOT gemma4 — the class name "Gemma4Client" is a legacy alias.
+        assert "llama3.1" in DEFAULT_MODEL.lower()
 
-    def test_02_base_url_is_localhost(self):
-        assert "localhost" in BASE_URL
+    def test_02_base_url_is_local(self):
+        # BASE_URL = http://127.0.0.1:11434 — accept either localhost or 127.0.0.1
+        url = BASE_URL.lower()
+        assert "127.0.0.1" in url or "localhost" in url
 
     def test_03_default_temp_low(self):
         assert DEFAULT_TEMP <= 0.2
 
-    def test_04_max_retries_is_3(self):
-        assert MAX_RETRIES == 3
+    def test_04_max_retries_is_one(self):
+        # 2026-06-05: MAX_RETRIES is 1 (fast-fail P0 fix), not 3.
+        assert MAX_RETRIES == 1
 
     def test_05_seed_is_42(self):
+        # C5: seed=42 everywhere.
         assert SEED == 42
 
 
@@ -108,12 +114,10 @@ class TestChatMethod:
         assert result == ""
 
     def test_14_circuit_trips_after_max_failures(self, client):
-        # Each chat() call = 1 failure_count increment (after MAX_RETRIES exhausted)
-        # Need MAX_RETRIES (3) chat() calls to trip the circuit
+        # 2026-06-05: MAX_RETRIES is 1 — each chat() call is one failure,
+        # so a single failed call should trip the circuit.
         with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
-            client.chat("test1")  # failure_count = 1
-            client.chat("test2")  # failure_count = 2
-            client.chat("test3")  # failure_count = 3 -> circuit trips
+            client.chat("test1")  # failure_count = 1 -> circuit trips
         assert client._circuit_open is True
 
     def test_15_circuit_open_returns_empty_immediately(self, client):

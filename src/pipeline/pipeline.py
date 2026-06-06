@@ -105,12 +105,17 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 # Query Type Mapping
 # ──────────────────────────────────────────────────────────────────────────────
+#
+# 2026-06-05: query_classifier.QueryType constants now match BAState's
+# canonical names directly, so QUERY_TYPE_MAP is empty (kept as identity
+# map for legacy callers that pass non-canonical names like "numeric").
 
 QUERY_TYPE_MAP = {
-    "numeric": "numerical",
-    "narrative": "text",
+    # legacy → canonical (kept for backward compatibility)
+    "numeric":     "numerical",
+    "narrative":   "text",
     "qualitative": "text",
-    "comparison": "multi_doc",
+    "comparison":  "multi_doc",
 }
 
 VALID_QUERY_TYPES = {
@@ -304,13 +309,16 @@ class FinBenchPipeline:
             state,
         )
 
-        logger.info(
-            "[PIPELINE] Ingest complete | chunks=%d",
-            getattr(
-                state,
-                "chunk_count",
-                0,
-            ),
+        # FIX-v3 (2026-06-05): diagnostic logging — surface what was extracted
+        # FIX-v4 (2026-06-05): use warning() so it shows under root WARNING level
+        # (the eval script sets root logger to WARNING, so INFO is hidden)
+        _table_cells = getattr(state, "table_cells", None) or []
+        _raw_text    = getattr(state, "raw_text",    "") or ""
+        logger.warning(
+            "[PIPELINE] Ingest complete | chunks=%d | cells=%d | raw_text=%dKB",
+            getattr(state, "chunk_count", 0),
+            len(_table_cells),
+            len(_raw_text) // 1024,
         )
 
         cleanup_memory()
@@ -576,34 +584,66 @@ class FinBenchPipeline:
         # ──────────────────────────────────────────────────────────────────────
         # SNIPER-ONLY LLM BYPASS (P0)
         # ──────────────────────────────────────────────────────────────────────
+        #
+        # FIX-B (2026-06-04): Removed the buggy fallback that placed the
+        # first BM25 chunk text into final_answer. That caused the
+        # FinanceBench eval to return the document's TABLE OF CONTENTS as
+        # the answer to capex / PPNE questions — scoring 0% true accuracy
+        # but getting ~6-7% accidental word-overlap credit.
+        #
+        # New behaviour: if Sniper missed, try extract_lib direct resolution
+        # on table_cells using the matched metric. If that also misses,
+        # return a clean RETRIEVAL_MISS — never pollute final_answer with
+        # arbitrary retrieval text.
+        # ──────────────────────────────────────────────────────────────────────
         if os.environ.get("SNIPER_ONLY") == "1":
-            # Skip all LLM pods. Use best available retrieval result.
-            _best = ""
-            for _src in (
-                getattr(state, "reranked_chunks", None),
-                getattr(state, "retrieval_stage_2", None),
-                getattr(state, "bm25_results", None),
-            ):
-                if _src:
-                    _c = _src[0]
-                    _best = (
-                        _c.get("text")
-                        or _c.get("page_content")
-                        or ""
-                    ) if isinstance(_c, dict) else str(_c)
-                    if _best:
-                        break
+            # ───────────────────────────────────────────────────────────────────────────
+            # N20 Composite Resolver — deterministic offline answer for
+            # complex (decision / causal / segment) questions BEFORE we
+            # give up and emit RETRIEVAL_MISS.
+            # ───────────────────────────────────────────────────────────────────────────
+            try:
+                from src.analysis.composite_resolver import run_composite_resolver
+                _comp_ans = run_composite_resolver(state)
+                if _comp_ans.answered:
+                    # N20 found a deterministic answer — use it.
+                    state.final_answer         = _comp_ans.final_answer
+                    state.final_answer_pre_xgb = _comp_ans.final_answer
+                    state.confidence_score     = _comp_ans.confidence
+                    state.winning_pod          = _comp_ans.winning_pod
+                    state = _safe_run("N18 RLEF", run_rlef_engine, state)
+                    state = _safe_run("N19 Output", run_output_generator, state)
+                    cleanup_memory()
+                    logger.warning(
+                        "[PIPELINE] N20 hit | pod=%s | conf=%.2f | %s",
+                        _comp_ans.winning_pod,
+                        _comp_ans.confidence,
+                        _comp_ans.final_answer[:120],
+                    )
+                    return state
+            except Exception:
+                logger.exception("[PIPELINE] N20 composite resolver failed")
 
             if getattr(state, "sniper_hit", False) and getattr(state, "sniper_answer", ""):
                 state.final_answer = state.sniper_answer
                 state.final_answer_pre_xgb = state.sniper_answer
-                state.confidence_score = getattr(state, "sniper_confidence", 0.5)
+                state.confidence_score = getattr(
+                    state, "sniper_confidence", 0.5
+                )
                 state.winning_pod = "SNIPER_ONLY"
             else:
-                state.final_answer = _best[:500] if _best else "RETRIEVAL_MISS"
-                state.final_answer_pre_xgb = state.final_answer
-                state.confidence_score = 0.1
-                state.winning_pod = "SNIPER_ONLY_RETRIEVAL"
+                # FIX-B: Try extract_lib as second deterministic pass before giving up
+                _alt = _sniper_only_extract_fallback(state)
+                if _alt:
+                    state.final_answer = _alt
+                    state.final_answer_pre_xgb = _alt
+                    state.confidence_score = 0.75
+                    state.winning_pod = "EXTRACT_LIB_FALLBACK"
+                else:
+                    state.final_answer = "RETRIEVAL_MISS"
+                    state.final_answer_pre_xgb = "RETRIEVAL_MISS"
+                    state.confidence_score = 0.0
+                    state.winning_pod = "SNIPER_ONLY_MISS"
 
             state = _safe_run("N18 RLEF", run_rlef_engine, state)
             state = _safe_run("N19 Output", run_output_generator, state)
@@ -703,6 +743,46 @@ class FinBenchPipeline:
                 f"RETRIEVAL_MISS: {reason}"
             )
 
+        # ───────────────────────────────────────────────────────────────────────
+        # FIX-D (2026-06-04, v2): Optional verify_lib post-check
+        # ───────────────────────────────────────────────────────────────────────
+        # If verify_lib is installed, run a final deterministic verification
+        # on the answer. If verify_lib is not installed this is a no-op.
+        # The verifier is informational only — we log warnings but never
+        # block the answer at this stage.
+        #
+        # v2: Uses lib_bridge's verify_final_answer_safe which adapts the
+        # answer-string to the (metric, value) signature expected by
+        # verify_lib.verify_answer. Returns (ok, abstain, reasons[]).
+        try:
+            from src.utils.lib_bridge import verify_final_answer_safe
+
+            # Choose a metric hint based on the resolved query type
+            _metric_hint = "answer"
+            _qt = getattr(state, "query_type", "") or ""
+            if _qt in ("numerical", "ratio"):
+                _metric_hint = "value"
+
+            v_ok, v_abstain, v_reasons = verify_final_answer_safe(
+                getattr(state, "final_answer", "") or "",
+                metric=_metric_hint,
+                confidence=float(
+                    getattr(state, "confidence_score", 1.0) or 1.0
+                ),
+                company=getattr(state, "company_name", "") or "",
+                fiscal_year=getattr(state, "fiscal_year", "") or "",
+                doc_type=getattr(state, "doc_type", "") or "",
+            )
+            if not v_ok or v_abstain:
+                logger.warning(
+                    "[PIPELINE] verify_lib flagged answer | ok=%s abstain=%s | %s",
+                    v_ok,
+                    v_abstain,
+                    "; ".join(v_reasons)[:240],
+                )
+        except Exception:
+            logger.exception("[PIPELINE] verify_lib post-check failed")
+
         # ──────────────────────────────────────────────────────────────────────
         # Final Output
         # ──────────────────────────────────────────────────────────────────────
@@ -754,6 +834,126 @@ class FinBenchPipeline:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _sniper_only_extract_fallback(state) -> str:
+    """
+    FIX-B fallback: when Sniper misses in SNIPER_ONLY mode, attempt one
+    deterministic resolution using extract_lib + pattern_lib before giving up.
+
+    Returns a formatted answer string on success, or empty string on miss.
+    Never raises.
+    """
+    try:
+        cells = getattr(state, "table_cells", None) or []
+        # FIX-v3 (2026-06-05): proceed even when cells empty — path 2/3 try raw_text/chunks
+
+        query = getattr(state, "query", "") or ""
+        if not query:
+            return ""
+
+        # Lazy import — these libs are optional
+        try:
+            from extract_lib.resolver import resolve_metric
+        except Exception:
+            return ""
+
+        # Map common question phrasings to extract_lib metric IDs.
+        # NOTE: extract_lib.synonyms currently defines only 3 metrics:
+        #   revenue, cogs, net_income
+        # The other aliases below are present so we route the QUESTION TYPE
+        # correctly; resolve_metric() will return invalid for unsupported
+        # metric IDs and we'll cleanly return "" (no garbage answer).
+        # When extract_lib adds more METRIC_SYNONYMS entries, these mappings
+        # immediately start working with no code change.
+        q = query.lower()
+        metric_aliases = {
+            # ── Currently supported by extract_lib.synonyms ───────────────
+            "net revenue":           "revenue",
+            "net sales":             "revenue",
+            "total revenue":         "revenue",
+            "total net sales":       "revenue",
+            "net income":            "net_income",
+            "net earnings":          "net_income",
+            "cost of revenue":       "cogs",
+            "cost of sales":         "cogs",
+            "cost of goods sold":    "cogs",
+            # ── Routable, will resolve once extract_lib adds these ────────────
+            "capital expenditure":   "capex",
+            "capex":                 "capex",
+            "operating income":      "operating_income",
+            "gross profit":          "gross_profit",
+            "total assets":          "total_assets",
+            "total liabilities":     "total_liabilities",
+            "shareholders equity":   "shareholders_equity",
+            "stockholders equity":   "shareholders_equity",
+            "long-term debt":        "long_term_debt",
+            "long term debt":        "long_term_debt",
+            "diluted eps":           "eps_diluted",
+            "basic eps":             "eps_basic",
+            "earnings per share":    "eps_diluted",
+            "cash and cash equivalents": "cash",
+            "operating cash flow":   "operating_cash_flow",
+            "free cash flow":        "free_cash_flow",
+            "r&d":                   "r_and_d",
+            "research and development": "r_and_d",
+            "sg&a":                  "sg_and_a",
+            "interest expense":      "interest_expense",
+            "income tax":            "income_tax",
+            "effective tax rate":    "effective_tax_rate",
+        }
+
+        metric_id = ""
+        # Prefer longer matches first
+        for alias, mid in sorted(metric_aliases.items(), key=lambda x: -len(x[0])):
+            if alias in q:
+                metric_id = mid
+                break
+        if not metric_id:
+            return ""
+
+        # Period hint from state
+        period = getattr(state, "fiscal_year", "") or ""
+
+        # Path 1: extract_lib on table_cells (only if cells exist)
+        if cells:
+            result = resolve_metric(metric_id, cells, period or "")
+            if result and result.valid and result.value is not None:
+                raw  = getattr(result, "raw_value", "") or str(result.value)
+                row  = getattr(result, "row_header", "") or metric_id
+                page = getattr(result, "page", 0) or 0
+                company  = getattr(state, "company_name", "") or ""
+                doc_type = getattr(state, "doc_type",     "") or ""
+                citation = f"{company}/{doc_type}/{period}/{row}/{page}"
+                return f"{raw} [{citation}]"
+
+        # Path 2: raw_text scan via extract_lib synonyms (when cells sparse)
+        raw_text = getattr(state, "raw_text", "") or ""
+        if raw_text and len(raw_text) > 100:
+            hit = _scan_raw_text_for_metric(raw_text, metric_id)
+            if hit:
+                value_str, idx = hit
+                company  = getattr(state, "company_name", "") or ""
+                doc_type = getattr(state, "doc_type",     "") or ""
+                citation = f"{company}/{doc_type}/{period}/{metric_id}/raw@{idx}"
+                return f"{value_str} [{citation}]"
+
+        # Path 3: BM25 chunk scan (last resort)
+        chunks = getattr(state, "bm25_results", None) or []
+        if chunks:
+            hit = _scan_chunks_for_metric(chunks, metric_id)
+            if hit:
+                value_str, page = hit
+                company  = getattr(state, "company_name", "") or ""
+                doc_type = getattr(state, "doc_type",     "") or ""
+                citation = f"{company}/{doc_type}/{period}/{metric_id}/{page}"
+                return f"{value_str} [{citation}]"
+
+        return ""
+
+    except Exception:
+        logger.exception("[PIPELINE] _sniper_only_extract_fallback failed")
+        return ""
+
+
 def _safe_run(
     label: str,
     fn,
@@ -801,3 +1001,139 @@ def run_pipeline(
         question,
         **kwargs,
     )
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# FIX-v3 (2026-06-05): Raw-text and chunk fallback helpers
+# These let SNIPER_ONLY mode score points even when pdfplumber table
+# extraction is sparse (which is common on complex 10-K PDFs).
+# ───────────────────────────────────────────────────────────────────────────────
+
+import re as _re
+
+_NUMBER_RE = _re.compile(
+    # FIX-v5 (2026-06-05): use \d+ instead of [\d]{1,3} so plain digit
+    # sequences (e.g. "1577" after comma-stripping in _norm()) match
+    # FULLY. Previously only first 3 digits were captured, truncating
+    # "1,577" → "157".  This single bug regressed Q1 from PASS to FAIL.
+    r"\$?\s*\(?\-?\s*\d+(?:,\d{3})*(?:\.\d+)?\)?"
+    r"(?:\s*(?:million|billion|thousand|bn|mn|m|b))?",
+    _re.IGNORECASE,
+)
+
+
+def _scan_raw_text_for_metric(raw_text: str, metric_id: str):
+    """
+    Scan raw_text for any positive synonym of metric_id and extract the
+    nearest plausible number. Returns (value_str, char_index) or None.
+
+    FIX-v4 (2026-06-05): whitespace-tolerant matching. pdfplumber output
+    often has "Property, Plant\n  and Equipment" instead of
+    "Property, Plant and Equipment". We normalise BOTH the synonym and
+    a search window of the raw_text by collapsing all whitespace and
+    stripping punctuation, then look for the normalised synonym.
+    """
+    try:
+        from extract_lib.synonyms import METRIC_SYNONYMS
+    except Exception:
+        return None
+
+    syn = METRIC_SYNONYMS.get(metric_id, {})
+    positives = syn.get("positive", [])
+    if not positives:
+        return None
+
+    def _norm(s: str) -> str:
+        # Collapse all whitespace runs to single space, strip commas/colons,
+        # lowercase. Keeps & and digits for things like "r&d".
+        s = s.lower()
+        s = _re.sub(r"[,;:]", "", s)
+        s = _re.sub(r"\s+", " ", s)
+        return s.strip()
+
+    # Pre-normalise the raw_text ONCE — expensive on 200KB text but the
+    # whole eval has only a few queries per ingest so this is fine.
+    raw_norm = _norm(raw_text)
+    # Build an index of original positions for each char in raw_norm.
+    # This lets us map a hit-position back to the original text for citation.
+    # For simplicity, citation index becomes the position in raw_norm.
+
+    for synonym in sorted(positives, key=len, reverse=True):
+        s_norm = _norm(synonym)
+        idx = raw_norm.find(s_norm)
+        if idx < 0:
+            continue
+
+        # Look in the next 300 chars (of normalised text) for a number
+        window_start = idx + len(s_norm)
+        window_end   = min(window_start + 300, len(raw_norm))
+        window       = raw_norm[window_start:window_end]
+
+        m = _NUMBER_RE.search(window)
+        if not m:
+            continue
+
+        number_str = m.group(0).strip()
+        digits_only = _re.sub(r"[^\d]", "", number_str)
+        if len(digits_only) < 2:
+            continue
+
+        return (number_str, idx)
+
+    return None
+
+
+def _scan_chunks_for_metric(chunks, metric_id: str):
+    """
+    Scan top BM25 chunks for any positive synonym of metric_id and extract
+    the nearest plausible number. Returns (value_str, page) or None.
+
+    FIX-v4 (2026-06-05): whitespace-tolerant matching (see
+    _scan_raw_text_for_metric for rationale).
+    """
+    try:
+        from extract_lib.synonyms import METRIC_SYNONYMS
+    except Exception:
+        return None
+
+    syn = METRIC_SYNONYMS.get(metric_id, {})
+    positives = syn.get("positive", [])
+    if not positives:
+        return None
+
+    def _norm(s: str) -> str:
+        s = s.lower()
+        s = _re.sub(r"[,;:]", "", s)
+        s = _re.sub(r"\s+", " ", s)
+        return s.strip()
+
+    for chunk in chunks[:6]:
+        text = (chunk.get("text") or chunk.get("page_content") or "")
+        if not text or len(text) < 30:
+            continue
+
+        text_norm = _norm(text)
+        page = chunk.get("page", 0) or 0
+
+        for synonym in sorted(positives, key=len, reverse=True):
+            s_norm = _norm(synonym)
+            idx = text_norm.find(s_norm)
+            if idx < 0:
+                continue
+
+            window_start = idx + len(s_norm)
+            window_end   = min(window_start + 250, len(text_norm))
+            window       = text_norm[window_start:window_end]
+
+            m = _NUMBER_RE.search(window)
+            if not m:
+                continue
+
+            number_str = m.group(0).strip()
+            digits_only = _re.sub(r"[^\d]", "", number_str)
+            if len(digits_only) < 2:
+                continue
+
+            return (number_str, page)
+
+    return None

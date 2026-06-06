@@ -1,17 +1,37 @@
 ﻿"""
 src/utils/llm_client.py
 
-Production-Grade Local LLM Client
-Optimized for:
+Production-Grade Local LLM Client (Ollama → Llama 3.1 8B)
 
+Optimized for:
 - Ollama
-- Llama 3.1
+- Llama 3.1 (C3 compliant)
 - Windows
 - Colab
 - T4 GPUs
 - FinanceBench
 - Long-running evaluation
 - Stability under load
+
+── NOTE ON DUPLICATION (2026-06-05) ─────────────────────────────
+The project has two Ollama clients by design:
+
+  1. THIS FILE (Gemma4Client) — the "heavy" canonical client.
+     - Thread-safe, circuit breaker, JSON parsing helpers, health stats,
+       MAX_PROMPT_CHARS truncation, KEEP_ALIVE for hot model state.
+     - Used by:  pipeline.py via get_llm_client()
+     - Used by:  CFO/Quant, Auditor, Mediator pods (via state.llm_client)
+
+  2. src/analysis/piv_loop.py (OllamaClient) — the "light" internal client.
+     - Same HTTP endpoint, simpler implementation, no circuit breaker.
+     - Used by:  StrategicPlanner / ContextImplementor / CuriousValidator
+       which are inner agents of N11 PIV loop.
+     - Lives there so PIV can be unit-tested without importing pipeline
+       internals, and so it can fall back independently if the heavy
+       client's circuit breaker has tripped.
+
+The class is still named "Gemma4Client" because tests/test_gemma4_client.py
+references it. DEFAULT_MODEL has been updated to llama3.1:8b for C3.
 """
 
 from __future__ import annotations

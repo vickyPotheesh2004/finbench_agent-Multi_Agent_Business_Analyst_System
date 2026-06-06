@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES         = 3
 OLLAMA_MODEL        = "financebench-expert-v1"
-OLLAMA_FALLBACK     = "gemma4:e4b"
+OLLAMA_FALLBACK     = "llama3.1:8b"   # C3: Llama 3.1 8B is the constraint base model
 OLLAMA_BASE_URL     = "http://localhost:11434"
 HITL_CONF_THRESHOLD = 0.65
 ITERATION_CAP       = 5

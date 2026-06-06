@@ -9,10 +9,18 @@ formula (ratio / margin / growth / turnover), it:
   4. Returns the answer, bypassing the LLM entirely
 
 Pure deterministic. No LLM. No network. Auditable.
+
+2026-06-04 FIX-A: Use extract_lib.resolver.resolve_metric for proper
+                  scored cell extraction. Fixes 'revenue:53.8' bug where
+                  naive substring matching picked a margin row (53.8%)
+                  instead of the actual revenue total (34,229).
 """
 from __future__ import annotations
 import re
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     import maths_lib as ml
@@ -20,6 +28,13 @@ try:
 except Exception:
     ml = None
     _HAS_MATHS = False
+
+try:
+    from extract_lib.resolver import resolve_metric as _resolve_metric
+    _HAS_EXTRACT = True
+except Exception:
+    _resolve_metric = None
+    _HAS_EXTRACT = False
 
 
 # ── Formula detection: question text -> formula_id ──────────────────
@@ -93,6 +108,36 @@ def _parse_number(s: Any) -> Optional[float]:
 
 def _detect_formula(question: str) -> Optional[str]:
     q = (question or "").lower()
+
+    # FIX-v4 (2026-06-05): Skip formula router entirely when the question
+    # is asking for EXPLANATION / DRIVERS / NARRATIVE rather than a
+    # numeric ratio value. The router has no LLM; it can only return a
+    # number. Returning a number to a "why" question scores zero AND
+    # poisons the answer with garbage like "384647.06".
+    narrative_markers = (
+        "why",
+        "what drove",
+        "what caused",
+        "explain",
+        "reason for",
+        "reasons for",
+        "drivers of",
+        "factors",
+        "contributed to",
+        "due to",
+        "is it",
+        "is the",
+        "is this",
+        "discuss",
+        "describe",
+        "is x a y",   # placeholder — specific phrasing checked below
+    )
+    if any(m in q for m in narrative_markers):
+        return None
+    # "Is 3M a capital-intensive business" — detect with regex
+    if re.search(r"\bis\s+\w+\s+(a|an)\s+\w+(-?\w+)?\s+(business|company)", q):
+        return None
+
     # Prefer longer keyword matches first (more specific)
     matches = []
     for fid, kws in FORMULA_KEYWORDS.items():
@@ -105,7 +150,54 @@ def _detect_formula(question: str) -> Optional[str]:
     return matches[0][1]
 
 
-def _find_input(cells: List[Dict], input_name: str) -> Optional[float]:
+# Map formula input names to extract_lib metric IDs.
+# extract_lib uses metric IDs like "revenue", "net_income" already, so this is mostly identity.
+_INPUT_TO_METRIC: Dict[str, str] = {
+    "revenue":             "revenue",
+    "cogs":                "cogs",
+    "net_income":          "net_income",
+    "operating_income":    "operating_income",
+    "ebitda":              "ebitda",
+    "current_assets":      "current_assets",
+    "current_liabilities": "current_liabilities",
+    "cash":                "cash",
+    "inventory":           "inventory",
+    "total_assets":        "total_assets",
+    "total_debt":          "long_term_debt",
+    "shareholders_equity": "shareholders_equity",
+    "interest_expense":    "interest_expense",
+    "ebit":                "operating_income",
+    "tax_expense":         "income_tax",
+    "pretax_income":       "income_before_tax",
+    "dividends":           "dividends_paid",
+    "average_inventory":   "inventory",
+}
+
+
+def _find_input(cells: List[Dict], input_name: str, period: str = "") -> Optional[float]:
+    """
+    Find a formula input value from table cells.
+
+    FIX-A (2026-06-04): Primary path now uses extract_lib's scored
+    resolve_metric (rejects decoys, scores by anti-pattern match).
+    Falls back to legacy substring matching only if extract_lib unavailable
+    or returns no result.
+    """
+    # ── Path 1: extract_lib (scored, anti-pattern aware) ────────────────
+    if _HAS_EXTRACT and _resolve_metric is not None:
+        metric_id = _INPUT_TO_METRIC.get(input_name, input_name)
+        try:
+            result = _resolve_metric(metric_id, cells, period or "")
+            if result and result.valid and result.value is not None:
+                logger.debug(
+                    "formula_router: extract_lib resolved '%s' = %s (conf=%.2f)",
+                    input_name, result.value, getattr(result, "confidence", 0.0),
+                )
+                return float(result.value)
+        except Exception:
+            logger.exception("formula_router: extract_lib.resolve_metric failed")
+
+    # ── Path 2: legacy substring matching (fallback only) ───────────────
     keywords = INPUT_SYNONYMS.get(input_name, [input_name.replace("_", " ")])
     # exact row_header match first, then substring
     for exact in (True, False):
@@ -144,10 +236,13 @@ def run_formula_router(state):
     if not needed:
         return state
 
+    # FIX-A: Pass fiscal_year as period hint to extract_lib for scoring boost
+    period_hint = getattr(state, "fiscal_year", "") or ""
+
     inputs: Dict[str, float] = {}
     missing: List[str] = []
     for inp in needed:
-        v = _find_input(cells, inp)
+        v = _find_input(cells, inp, period=period_hint)
         if v is None:
             missing.append(inp)
         else:
@@ -164,6 +259,34 @@ def run_formula_router(state):
 
     if not result.valid or result.value is None:
         return state
+
+    # FIX-v3 (2026-06-05): Sanity bounds — reject obviously-wrong formula
+    # results that come from picking the wrong cells. Without this guard
+    # the formula router can return things like "12154.28%" gross margin
+    # which scores 0 against the gold answer.
+    val_for_check = float(result.value)
+    unit_for_check = (result.unit or "").strip()
+    if unit_for_check == "%":
+        # Margins/ratios as % are typically 0-100, occasionally up to 200.
+        # Anything above 500% is almost certainly wrong inputs.
+        if abs(val_for_check) > 500.0:
+            logger.warning(
+                "formula_router: rejected garbage result %.2f%% for %s (likely wrong inputs)",
+                val_for_check, fid,
+            )
+            return state
+    elif unit_for_check in ("x", ""):
+        # Pure ratios should rarely exceed 100x; reject if exceeds 10000
+        if abs(val_for_check) > 10000.0 and fid in (
+            "current_ratio", "quick_ratio", "cash_ratio",
+            "debt_to_equity", "debt_to_assets",
+            "interest_coverage", "asset_turnover", "inventory_turnover",
+        ):
+            logger.warning(
+                "formula_router: rejected garbage ratio %.2f for %s (likely wrong inputs)",
+                val_for_check, fid,
+            )
+            return state
 
     # Format the answer
     val = result.value

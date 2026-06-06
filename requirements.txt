@@ -84,3 +84,33 @@ posthog<4.0.0
 #   - openai, anthropic, cohere, google-generativeai   (violates C1)
 #   - watchdog                                          (we poll instead — C2)
 # ============================================================================
+
+# ============================================================================
+# 6 FINBENCH SUPPORT LIBRARIES — install via pip install -e from local path
+# (these are NOT on PyPI yet — see install_libs.bat for one-shot install)
+# ============================================================================
+#
+#   1. maths_lib       — 200+ deterministic financial formulas
+#                        pip install -e D:\projects\maths_lib_
+#
+#   2. extract_lib     — scored cell extraction with anti-pattern rejection
+#                        pip install -e D:\projects\fina_extractor_lib
+#
+#   3. pattern_lib     — question classification + period detection
+#                        pip install -e D:\projects\fina_pattern_lib
+#
+#   4. format_lib      — deterministic answer formatting
+#                        pip install -e D:\projects\fina_format_lib
+#
+#   5. logic_lib       — 195 rules across 6 layers (forensic + sanity)
+#                        pip install -e D:\projects\Fina_Logic_lib\logic_lib_
+#
+#   6. algo_lib        — advanced finance algorithms registry
+#                        pip install -e D:\projects\fina_algo_lib
+#
+#   7. verify_lib      — final-answer verification + abstention
+#                        pip install -e D:\projects\verify_lib_
+#
+# After install, verify with:
+#     python -m src.utils.lib_bridge
+# ============================================================================
