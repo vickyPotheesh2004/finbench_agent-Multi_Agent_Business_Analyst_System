@@ -126,16 +126,21 @@ class TestBAStateFieldGroups:
     def test_11_explainability_fields(self):
         """BAState N16 explainability fields must initialise correctly"""
         state = BAState(session_id="test-11")
-        assert state.shap_values        is None
-        assert state.feature_importance is None
-        assert state.causal_dag_path    is None
+        # Updated 2026-06-08: ba_state v11 uses empty-container defaults
+        # ({}/"") instead of None for these fields. Empty defaults are safer
+        # (no None-guards needed downstream) and are the authoritative schema.
+        assert state.shap_values        == {}
+        assert state.feature_importance == {}
+        assert state.causal_dag_path    == ""
 
     def test_12_output_fields(self):
         """BAState output fields must initialise correctly"""
         state = BAState(session_id="test-12")
+        # Updated 2026-06-08: ba_state v11 uses "" defaults instead of None
+        # for string output fields (authoritative schema).
         assert state.final_answer      == ""
-        assert state.final_report_path is None
-        assert state.xgb_ranked_answer is None
+        assert state.final_report_path == ""
+        assert state.xgb_ranked_answer == ""
         assert state.xgb_score         == 0.0
 
 
