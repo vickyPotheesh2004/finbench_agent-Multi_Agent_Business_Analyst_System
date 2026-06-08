@@ -28,12 +28,14 @@ networkx>=3.3,<4.0
 langgraph>=0.2,<2.0
 langchain-core>=0.2,<3.0
 jinja2>=3.1,<4.0
+ollama>=0.3,<1.0          # Python client for local Ollama server (C3 — Llama 3.1 8B)
 
 # ─── RETRIEVAL ────────────────────────────────────────────────────────────────
 bm25s>=0.1,<1.0
 sentence-transformers>=2.7,<6.0
 chromadb>=0.4,<2.0
 tiktoken>=0.7,<1.0
+rapidfuzz>=3.9,<4.0       # fuzzy metric-name matching in bm25_retriever
 
 # ─── DOCUMENT INGESTION ───────────────────────────────────────────────────────
 pdfplumber>=0.11,<1.0
@@ -86,14 +88,14 @@ posthog<4.0.0
 # ============================================================================
 
 # ============================================================================
-# 6 FINBENCH SUPPORT LIBRARIES — install via pip install -e from local path
+# 8 FINBENCH SUPPORT LIBRARIES — install via pip install -e from local path
 # (these are NOT on PyPI yet — see install_libs.bat for one-shot install)
 # ============================================================================
 #
 #   1. maths_lib       — 200+ deterministic financial formulas
 #                        pip install -e D:\projects\maths_lib_
 #
-#   2. extract_lib     — scored cell extraction with anti-pattern rejection
+#   2. extract_lib     — scored cell extraction with magnitude-aware selection
 #                        pip install -e D:\projects\fina_extractor_lib
 #
 #   3. pattern_lib     — question classification + period detection
@@ -111,6 +113,9 @@ posthog<4.0.0
 #   7. verify_lib      — final-answer verification + abstention
 #                        pip install -e D:\projects\verify_lib_
 #
+#   8. question_lib    — intent/subject/period decomposition + plan executor
+#                        pip install -e D:\projects\fina_question_lib
+#
 # After install, verify with:
-#     python -m src.utils.lib_bridge
+#     python -m src.utils.lib_bridge        # shows 7/7 core libs installed
 # ============================================================================
