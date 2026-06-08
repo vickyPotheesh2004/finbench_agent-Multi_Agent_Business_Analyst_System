@@ -60,21 +60,21 @@ FALLBACK_MODEL = "llama3.1:8b"
 BASE_URL = "http://127.0.0.1:11434"
 
 # Increased for FinanceBench
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 240    # FIX-v6: was 180. Cold-start Llama 3.1 8B can take 60-120s.
 
 DEFAULT_TEMP = 0.1
 
-MAX_RETRIES = 1      # P0 FIX: fail fast
+MAX_RETRIES = 3      # FIX-v6: was 1. Don't kill circuit on first cold-start timeout.
 
-RETRY_DELAY = 2.0
+RETRY_DELAY = 5.0    # FIX-v6: was 2.0. Give model time to warm between retries.
 
 SEED = 42
 
 AVAILABILITY_CACHE_TTL = 30.0
 
-CIRCUIT_RESET_SECONDS = 60.0
+CIRCUIT_RESET_SECONDS = 60.0    # auto-reset after 60s
 
-HEALTH_TIMEOUT = 5
+HEALTH_TIMEOUT = 10  # FIX-v6: was 5. Allow longer health checks during warmup.
 
 MAX_PROMPT_CHARS = 120_000
 
@@ -696,9 +696,11 @@ class Gemma4Client:
 
             self._failure_count += 1
 
+            # FIX-v6: open circuit only after 3 consecutive failures,
+            # not 1. A cold-start timeout used to kill the whole eval.
             if (
                 self._failure_count
-                >= MAX_RETRIES
+                >= 3
             ):
 
                 self._circuit_open = True
@@ -708,7 +710,8 @@ class Gemma4Client:
                 )
 
                 logger.error(
-                    "[LLM] Circuit breaker tripped"
+                    "[LLM] Circuit breaker tripped after %d failures",
+                    self._failure_count,
                 )
 
     def _update_availability(
@@ -778,3 +781,28 @@ def reset_llm_client(
     with _client_lock:
 
         _default_client = None
+
+
+# FIX-v6: helper to pre-warm Llama 3.1 8B before eval so the FIRST
+# real question doesn't trip the circuit breaker on cold-start.
+def prewarm_model(
+    model: str = DEFAULT_MODEL,
+    base_url: str = BASE_URL,
+    timeout: int = 300,
+) -> bool:
+    """Send a trivial prompt to load the model into VRAM/RAM.
+
+    Returns True on success.
+    """
+    client = Gemma4Client(model=model, base_url=base_url, timeout=timeout)
+    if not client.is_available():
+        logger.error("[LLM] prewarm: ollama not available")
+        return False
+    logger.info("[LLM] prewarming model=%s ...", model)
+    t0 = time.time()
+    out = client.chat("Say OK", temperature=0.0, max_tokens=4)
+    if out:
+        logger.info("[LLM] prewarm OK in %.1fs", time.time() - t0)
+        return True
+    logger.error("[LLM] prewarm FAILED")
+    return False

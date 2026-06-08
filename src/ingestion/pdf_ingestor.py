@@ -52,7 +52,14 @@ SUPPORTED_EXTENSIONS = {
 
 MAX_TEXT_CHARS = 20_000_000
 
-MAX_TABLES = 2000
+# FIX-v14 (2026-06-07): raised from 2000 -> 30000.
+# FIX-v11 (text-strategy) + FIX-v12 (single-row tables) extract far more
+# cells per page. The old 2000 cap filled up from early pages (cover, TOC,
+# MD&A) and CHOPPED OFF the actual income statement / balance sheet, which
+# in 10-Ks appears ~page 50-70. That deleted the revenue/PPE cells before
+# extraction ran -> Q2/Q3 "missing input" failures. 30000 small dicts is
+# ~6 MB, well within the 14 GB RAM budget (C4).
+MAX_TABLES = 30000
 
 MAX_HEADINGS = 3000
 
@@ -389,6 +396,12 @@ class PDFIngestor:
                     )
 
                     # Tables
+                    # FIX-v11 (2026-06-07): pdfplumber's default "lines"
+                    # strategy needs ruled borders. Many 10-Ks (e.g.
+                    # Activision) use BORDERLESS tables -> default returns
+                    # nothing (cells=0). Retry with the "text" strategy,
+                    # which infers columns from whitespace alignment.
+                    # Zero new dependencies — pdfplumber already supports this.
 
                     try:
 
@@ -401,34 +414,72 @@ class PDFIngestor:
 
                         tables = []
 
+                    if not tables:
+
+                        try:
+
+                            tables = (
+                                page.extract_tables(
+                                    table_settings={
+                                        "vertical_strategy": "text",
+                                        "horizontal_strategy": "text",
+                                        "snap_tolerance": 4,
+                                        "join_tolerance": 4,
+                                        "edge_min_length": 3,
+                                        "min_words_vertical": 2,
+                                        "min_words_horizontal": 1,
+                                    }
+                                )
+                                or []
+                            )
+
+                            if tables:
+
+                                logger.info(
+                                    "[N01] page %d: text-strategy recovered %d tables",
+                                    page_num,
+                                    len(tables),
+                                )
+
+                        except Exception:
+
+                            tables = []
+
                     for table_idx, table in enumerate(
                         tables,
                         start=1,
                     ):
 
-                        if (
-                            not table
-                            or len(table)
-                            < 2
-                        ):
-
+                        # FIX-v12 (2026-06-07): only require >=1 row.
+                        # The old `< 2` check dropped single-row tables —
+                        # which on borderless 10-Ks (Activision) is MOST of
+                        # them, causing cells=0 even though pdfplumber found
+                        # 403 tables. Now we treat row 0 as data when there's
+                        # only one row (no header row to peel off).
+                        if not table:
                             continue
 
-                        headers = [
-                            str(c).strip()
-                            if c
-                            else ""
-                            for c in table[0]
-                        ]
+                        if len(table) >= 2:
+                            headers = [
+                                str(c).strip()
+                                if c
+                                else ""
+                                for c in table[0]
+                            ]
+                            data_rows = table[1:]
+                        else:
+                            # Single-row table: no header, treat as data
+                            headers = []
+                            data_rows = table
 
-                        for row in table[1:]:
+                        for row in data_rows:
 
                             if not row:
                                 continue
 
                             row_header = str(
                                 row[0]
-                            ).strip()
+                            ).strip() if row[0] else ""
 
                             for col_idx, cell in enumerate(
                                 row[1:],

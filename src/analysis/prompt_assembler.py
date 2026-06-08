@@ -38,6 +38,19 @@ def _get_jinja2():
     return _jinja2
 
 
+# FIX (2026-06-07): LLM Briefing — pre-compute question understanding +
+# verified figures + candidate drivers with deterministic libs, then inject
+# that briefing into the prompt BEFORE the question. Gives Llama 3.1 8B a
+# research-analyst's pre-digested packet so it stops hallucinating.
+try:
+    from src.analysis.llm_briefing import build_briefing, render_briefing_block
+    _HAS_BRIEFING = True
+except Exception:
+    build_briefing = None
+    render_briefing_block = None
+    _HAS_BRIEFING = False
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 QUERY_TYPES     = ["numerical", "ratio", "multi_doc", "text", "forensic"]
@@ -258,12 +271,37 @@ class PromptAssembler:
             state.prompt_template  = "context_first"
             return state
 
+        # FIX (2026-06-07): build the analyst briefing from deterministic libs
+        # and pass it through so it lands in the prompt BEFORE the question.
+        briefing_block = ""
+        if _HAS_BRIEFING and build_briefing is not None:
+            try:
+                briefing = build_briefing(
+                    question     = query,
+                    raw_text     = getattr(state, "raw_text", "") or "",
+                    cells        = getattr(state, "table_cells", None) or [],
+                    bm25_results = getattr(state, "bm25_results", None) or [],
+                    company      = company,
+                    fiscal_year  = fiscal_year,
+                    doc_type     = getattr(state, "doc_type", "") or "",
+                )
+                briefing_block = render_briefing_block(briefing)
+                logger.info(
+                    "N10 Briefing: intent=%s | subject=%s | drivers=%d | numbers=%d",
+                    briefing.get("intent"), briefing.get("subject"),
+                    len(briefing.get("candidate_drivers", [])),
+                    len(briefing.get("known_numbers", {})),
+                )
+            except Exception:
+                logger.debug("N10: briefing build failed", exc_info=True)
+
         prompt = self.assemble(
-            query       = query,
-            chunks      = chunks,
-            query_type  = query_type,
-            company_name= company,
-            fiscal_year = fiscal_year,
+            query          = query,
+            chunks         = chunks,
+            query_type     = query_type,
+            company_name   = company,
+            fiscal_year    = fiscal_year,
+            briefing_block = briefing_block,
         )
 
         state.assembled_prompt = prompt
@@ -284,6 +322,7 @@ class PromptAssembler:
         query_type:   str  = "text",
         company_name: str  = "UNKNOWN",
         fiscal_year:  str  = "UNKNOWN",
+        briefing_block: str = "",
     ) -> str:
         """
         Build a C7-compliant prompt from retrieved chunks.
@@ -312,6 +351,13 @@ class PromptAssembler:
 
         # Build retrieved context string from chunks
         retrieved_context = self._format_chunks(chunks)
+
+        # FIX (2026-06-07): prepend the analyst briefing to the context so the
+        # LLM reads the pre-computed understanding + verified figures FIRST.
+        # Still inside the RETRIEVED CONTEXT block → C7 stays satisfied
+        # (briefing + context both appear before the QUESTION marker).
+        if briefing_block:
+            retrieved_context = briefing_block + "\n\n" + retrieved_context
 
         # Render template
         template = self._get_template(query_type)

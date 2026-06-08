@@ -233,6 +233,7 @@ def _extract_metric_from_raw_text(
         return None
 
     raw_norm = _norm(raw_text)
+    floor = _MEGA_FLOORS.get(metric_id, 0.0)
 
     for synonym in sorted(positives, key=len, reverse=True):
         s_norm = _norm(synonym)
@@ -242,16 +243,31 @@ def _extract_metric_from_raw_text(
         window_start = idx + len(s_norm)
         window_end = min(window_start + 300, len(raw_norm))
         window = raw_norm[window_start:window_end]
-        m = _NUMBER_RE.search(window)
-        if not m:
+        # FIX-v13: collect ALL candidates in the window, skip year-like and
+        # below-floor values, then for mega-metrics prefer the LARGEST.
+        candidates = []
+        for m in _NUMBER_RE.finditer(window):
+            number_str = m.group(0).strip()
+            digits_only = re.sub(r"[^\d]", "", number_str)
+            if len(digits_only) < 2:
+                continue
+            val = _parse_number_to_float(number_str)
+            if val is None:
+                continue
+            av = abs(val)
+            # skip year-like
+            if 1990 <= av <= 2030 and av == int(av):
+                continue
+            # skip below floor for mega metrics
+            if av < floor:
+                continue
+            candidates.append(val)
+        if not candidates:
             continue
-        number_str = m.group(0).strip()
-        digits_only = re.sub(r"[^\d]", "", number_str)
-        if len(digits_only) < 2:
-            continue
-        val = _parse_number_to_float(number_str)
-        if val is not None:
-            return val
+        if floor > 0.0:
+            # mega metric: prefer the largest plausible value
+            return max(candidates, key=lambda x: abs(x))
+        return candidates[0]
     return None
 
 
@@ -273,17 +289,51 @@ def _extract_metric_from_cells(
     return None
 
 
+# FIX-v13 (2026-06-07): magnitude floors so the raw_text fallback can't
+# return a tiny wrong value (e.g. revenue=1.0 from "net sales rose 1.0%").
+_MEGA_FLOORS = {
+    "revenue": 50.0,
+    "total_assets": 50.0,
+    "total_liabilities": 50.0,
+    "shareholders_equity": 20.0,
+    "ppe": 20.0,
+    "cogs": 20.0,
+    "current_assets": 20.0,
+    "current_liabilities": 20.0,
+    "long_term_debt": 5.0,
+    "net_income": 5.0,
+    "operating_income": 5.0,
+    "capex": 5.0,
+}
+
+
 def _get_metric_value(
     metric_id: str,
     cells: List[Dict],
     raw_text: str,
     period: str,
 ) -> Optional[float]:
-    """Try cells first, then raw_text fallback."""
+    """Try cells first (magnitude-aware via FIX-v13 resolver), then raw_text.
+
+    FIX-v13: enforce a magnitude floor on BOTH paths so a tiny wrong value
+    never wins for a mega-metric.
+    """
+    floor = _MEGA_FLOORS.get(metric_id, 0.0)
+
     v = _extract_metric_from_cells(cells, metric_id, period)
+    if v is not None and abs(v) >= floor:
+        return v
+
+    v2 = _extract_metric_from_raw_text(raw_text, metric_id)
+    if v2 is not None and abs(v2) >= floor:
+        return v2
+
+    # Neither cleared the floor. Return the cells value if it exists (better
+    # provenance), else the raw_text value, else None. Downstream sanity
+    # checks will abstain if it's still absurd.
     if v is not None:
         return v
-    return _extract_metric_from_raw_text(raw_text, metric_id)
+    return v2
 
 
 # ─────────────────────────────────────────────────────────────────────────────

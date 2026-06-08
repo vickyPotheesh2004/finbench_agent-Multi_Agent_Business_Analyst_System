@@ -462,8 +462,35 @@ class FinBenchPipeline:
         _sniper_only = os.environ.get("SNIPER_ONLY") == "1"
         _sniper_hit = getattr(state, "sniper_hit", False)
         _sniper_conf = getattr(state, "sniper_confidence", 0.0)
+        _sniper_ans = getattr(state, "sniper_answer", "") or ""
 
-        if _sniper_hit and (_sniper_only or _sniper_conf >= 0.85):
+        # FIX-v15 (2026-06-08): guard Sniper's early-exit so it can't jump the
+        # queue with garbage. After FIX-v14 raised cells to ~30000, Sniper
+        # started matching noise cells (e.g. "Recognition" from the revenue-
+        # recognition accounting policy) at conf>=0.85 and exiting in 0.6s
+        # BEFORE N20 (which had the right answer) could run. Two guards:
+        #   1. The sniper answer must contain an actual digit (a financial
+        #      value), not a bare word like "Recognition".
+        #   2. Narrative / decision / segment questions must NEVER early-exit
+        #      on Sniper — they belong to N20. Let them fall through.
+        _ans_has_number = bool(_re.search(r"\d", _sniper_ans))
+        _q_lower = (getattr(state, "query", "") or "").lower()
+        _is_n20_question = any(
+            kw in _q_lower
+            for kw in (
+                "what drove", "why did", "which segment", "capital-intensive",
+                "capital intensive", "explain", "what caused", "reason",
+                "driver", "is it", "does the",
+            )
+        )
+        _sniper_exit_ok = (
+            _sniper_hit
+            and _ans_has_number
+            and not _is_n20_question
+            and (_sniper_only or _sniper_conf >= 0.90)
+        )
+
+        if _sniper_exit_ok:
 
             logger.info(
                 "[PIPELINE] Sniper early exit"
@@ -580,6 +607,61 @@ class FinBenchPipeline:
             run_prompt_assembler,
             state,
         )
+
+        # ──────────────────────────────────────────────────────────────────────
+        # FIX-v7 (2026-06-07): N20 Composite Resolver runs in FULL mode too,
+        # BEFORE the slow LLM pods. If N20 hits with high confidence we skip
+        # the LLM entirely — saving 5-30 MINUTES per question on CPU systems.
+        # ──────────────────────────────────────────────────────────────────────
+        try:
+            from src.analysis.composite_resolver import run_composite_resolver
+            _comp_ans = run_composite_resolver(state)
+            if _comp_ans.answered and _comp_ans.confidence >= 0.70:
+                state.final_answer         = _comp_ans.final_answer
+                state.final_answer_pre_xgb = _comp_ans.final_answer
+                state.confidence_score     = _comp_ans.confidence
+                state.winning_pod          = _comp_ans.winning_pod
+                state = _safe_run("N18 RLEF", run_rlef_engine, state)
+                state = _safe_run("N19 Output", run_output_generator, state)
+                cleanup_memory()
+                logger.warning(
+                    "[PIPELINE] N20 fast-path HIT (full mode) | pod=%s | conf=%.2f | %s",
+                    _comp_ans.winning_pod, _comp_ans.confidence,
+                    _comp_ans.final_answer[:120],
+                )
+                return state
+        except Exception:
+            logger.exception("[PIPELINE] N20 fast-path failed")
+
+        # FIX-v7: also try the deterministic extract_lib fallback BEFORE LLM
+        # if the question is a simple value extraction. This solves Q1-style
+        # questions in 1-2 seconds instead of 30 minutes of LLM work.
+        _alt = _sniper_only_extract_fallback(state)
+        if _alt:
+            state.final_answer         = _alt
+            state.final_answer_pre_xgb = _alt
+            state.confidence_score     = 0.75
+            state.winning_pod          = "EXTRACT_LIB_FAST_PATH"
+            state = _safe_run("N18 RLEF", run_rlef_engine, state)
+            state = _safe_run("N19 Output", run_output_generator, state)
+            cleanup_memory()
+            logger.warning(
+                "[PIPELINE] EXTRACT_LIB fast-path HIT (full mode) | %s",
+                _alt[:120],
+            )
+            return state
+
+        # FIX-v7: CPU users can set SKIP_LLM=1 to bail out before the slow
+        # LLM pods if neither N20 nor extract_lib could answer.
+        if os.environ.get("SKIP_LLM") == "1":
+            state.final_answer         = "RETRIEVAL_MISS"
+            state.final_answer_pre_xgb = "RETRIEVAL_MISS"
+            state.confidence_score     = 0.0
+            state.winning_pod          = "SKIP_LLM_MISS"
+            state = _safe_run("N18 RLEF", run_rlef_engine, state)
+            state = _safe_run("N19 Output", run_output_generator, state)
+            cleanup_memory()
+            return state
 
         # ──────────────────────────────────────────────────────────────────────
         # SNIPER-ONLY LLM BYPASS (P0)
@@ -1069,16 +1151,42 @@ def _scan_raw_text_for_metric(raw_text: str, metric_id: str):
         window_end   = min(window_start + 300, len(raw_norm))
         window       = raw_norm[window_start:window_end]
 
-        m = _NUMBER_RE.search(window)
-        if not m:
-            continue
-
-        number_str = m.group(0).strip()
-        digits_only = _re.sub(r"[^\d]", "", number_str)
-        if len(digits_only) < 2:
-            continue
-
-        return (number_str, idx)
+        # FIX-v8 (2026-06-07): scan ALL candidate numbers in the window,
+        # not just the first one. Skip 4-digit year-like values (1990-2030)
+        # and tiny values (<$1M) for big balance-sheet metrics. This fixes
+        # the Q2 PPE-extracts-"2018" bug and Q10 revenue-extracts-"18.00".
+        for m in _NUMBER_RE.finditer(window):
+            number_str = m.group(0).strip()
+            digits_only = _re.sub(r"[^\d]", "", number_str)
+            if len(digits_only) < 2:
+                continue
+            # Parse to float for sanity checks
+            _raw_no_sign = number_str.replace("(", "").replace(")", "")
+            _raw_no_sign = _raw_no_sign.replace("$", "").replace(",", "").strip()
+            _raw_no_sign = _re.sub(r"\s*(million|billion|thousand|bn|mn|m|b)\s*$",
+                                    "", _raw_no_sign, flags=_re.IGNORECASE).strip()
+            try:
+                val = float(_raw_no_sign)
+            except ValueError:
+                continue
+            av = abs(val)
+            # Skip year-like values
+            if 1990 <= av <= 2030 and av == int(av):
+                continue
+            # Skip tiny values for big balance-sheet metrics
+            _big_metrics = {
+                "revenue", "cogs", "gross_profit", "operating_income",
+                "net_income", "total_assets", "total_liabilities",
+                "shareholders_equity", "long_term_debt", "cash",
+                "current_assets", "current_liabilities", "inventory",
+                "capex", "ppe", "goodwill", "intangible_assets",
+                "operating_cash_flow", "free_cash_flow",
+                "dividends_paid", "depreciation_amortization",
+                "interest_expense", "ebitda", "sg_and_a", "r_and_d",
+            }
+            if metric_id in _big_metrics and av < 1.0:
+                continue
+            return (number_str, idx)
 
     return None
 

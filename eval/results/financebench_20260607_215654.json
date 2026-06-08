@@ -1,0 +1,112 @@
+[
+  {
+    "financebench_id": "financebench_id_03029",
+    "question": "What is the FY2018 capital expenditure amount (in USD millions) for 3M? Give a response to the question by relying on the details shown in the cash flow statement.",
+    "gold": "$1577.00",
+    "predicted": "$1,577 million [3M/10-K/FY2018/capex]",
+    "correct": true,
+    "match_type": "numeric",
+    "score": 1.0,
+    "elapsed_sec": 23.89,
+    "winning_pod": "N20_QUESTION_LIB"
+  },
+  {
+    "financebench_id": "financebench_id_04672",
+    "question": "Assume that you are a public equities analyst. Answer the following question by primarily using information that is shown in the balance sheet: what is the year end FY2018 net PPNE for 3M? Answer in USD billions.",
+    "gold": "$8.70",
+    "predicted": "$0.06 billion [3M/10-K/FY2018/ppe]",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 12.0,
+    "winning_pod": "N20_QUESTION_LIB"
+  },
+  {
+    "financebench_id": "financebench_id_00499",
+    "question": "Is 3M a capital-intensive business based on FY2022 data?",
+    "gold": "No, the company is managing its CAPEX and Fixed Assets pretty efficiently, which is evident from below key metrics:\nCAPEX/Revenue Ratio: 5.1%\nFixed assets/Total Assets: 20%\nReturn on Assets= 12.4%",
+    "predicted": "RETRIEVAL_MISS",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 12.44,
+    "winning_pod": "SKIP_LLM_MISS"
+  },
+  {
+    "financebench_id": "financebench_id_01226",
+    "question": "What drove operating margin change as of FY2022 for 3M? If operating margin is not a useful metric for a company like this, then please state that and explain why.",
+    "gold": "Operating Margin for 3M in FY2022 has decreased by 1.7% primarily due to: \n-Decrease in gross Margin\n-mostly one-off charges including Combat Arms Earplugs litigation, impairment related to exiting PFAS manufacturing, costs related to exiting Russia and divestiture-related restructuring\ncharges",
+    "predicted": "Operating margin was driven by restructuring, supply chain costs, pricing actions, volume changes, increased investment, COVID-19 impacts, and Russia/Ukraine and geopolitical impacts. [Source: A discussion related to the components of year-on-year changes in operating income margin and earnings per diluted share follows:\n20\nTable of Contents\nOrganic growth/productivity and other:\n\u2022 In 2022, the following components impacted operating margins and earnings per diluted share year-on-year:\n\u2022 .] [3M/10-K/FY2022/MD&A/drivers]",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.152,
+    "elapsed_sec": 12.07,
+    "winning_pod": "N20_NARRATIVE"
+  },
+  {
+    "financebench_id": "financebench_id_01865",
+    "question": "If we exclude the impact of M&A, which segment has dragged down 3M's overall growth in 2022?",
+    "gold": "The consumer segment shrunk by 0.9% organically.",
+    "predicted": "The Transportation And Electronics segment grew by n/a \u2014 the lowest of the segments. [Source: General\n3M is a diversified technology company with a global presence in the following businesses: Safety and Industrial; Transportation and Electronics; Health Care; and Consumer. 3M is among the leading manufacturers of products for many of the mar] [3M/10-K/FY2022/segment_analysis]",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.089,
+    "elapsed_sec": 11.95,
+    "winning_pod": "N20_SEGMENT"
+  },
+  {
+    "financebench_id": "financebench_id_00807",
+    "question": "Does 3M have a reasonably healthy liquidity profile based on its quick ratio for Q2 of FY2023? If the quick ratio is not relevant to measure liquidity, please state that and explain why.",
+    "gold": "No. The quick ratio for 3M was 0.96 by Jun'23 close, which needs a bit of an improvement to touch the 1x mark",
+    "predicted": "RETRIEVAL_MISS",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 15.61,
+    "winning_pod": "SKIP_LLM_MISS"
+  },
+  {
+    "financebench_id": "financebench_id_00941",
+    "question": "Which debt securities are registered to trade on a national securities exchange under 3M's name as of Q2 of 2023?",
+    "gold": "Following debt securities registered under 3M's name are listed to trade on the New York Stock Exchange:\n-1.500% Notes due 2026 (Trading Symbol: MMM26)\n-1.750% Notes due 2030 (Trading Symbol: MMM30)\n-1.500% Notes due 2031 (Trading Symbol: MMM31)",
+    "predicted": "RETRIEVAL_MISS",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 14.83,
+    "winning_pod": "SKIP_LLM_MISS"
+  },
+  {
+    "financebench_id": "financebench_id_01858",
+    "question": "Does 3M maintain a stable trend of dividend distribution?",
+    "gold": "Yes, not only they distribute the dividends on a routine basis, 3M has also been increasing the per share dividend for consecutive 65 years",
+    "predicted": "RETRIEVAL_MISS",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 14.69,
+    "winning_pod": "SKIP_LLM_MISS"
+  },
+  {
+    "financebench_id": "financebench_id_02987",
+    "question": "What is the FY2019 fixed asset turnover ratio for Activision Blizzard? Fixed asset turnover ratio is defined as: FY2019 revenue / (average PP&E between FY2018 and FY2019). Round your answer to two decimal places. Base your judgments on the information provided primarily in the statement of income an",
+    "gold": "24.26",
+    "predicted": "RETRIEVAL_MISS",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 13.76,
+    "winning_pod": "SKIP_LLM_MISS"
+  },
+  {
+    "financebench_id": "financebench_id_07966",
+    "question": "What is the FY2017 - FY2019 3 year average of capex as a % of revenue for Activision Blizzard? Answer in units of percents and round to one decimal place. Calculate (or extract) the answer from the statement of income and the cash flow statement.",
+    "gold": "1.9%",
+    "predicted": "$12,017 million [Activision Blizzard/10-K/FY2019/revenue]",
+    "correct": false,
+    "match_type": "wrong",
+    "score": 0.0,
+    "elapsed_sec": 11.82,
+    "winning_pod": "N20_QUESTION_LIB"
+  }
+]
