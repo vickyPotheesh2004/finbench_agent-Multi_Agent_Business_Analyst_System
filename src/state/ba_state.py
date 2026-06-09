@@ -70,7 +70,7 @@ class BAState(BaseModel):
     company_name:  str = ""
     doc_type:      str = ""       # '10-K', '10-Q', '8-K'
     fiscal_year:   str = ""
-    model_version: str = "financebench-expert-v1"
+    model_version: str = "llama3.1:8b"
     seed:          int = 42       # ALWAYS 42 — C5
 
     # ── INGESTION (N01-N03) ────────────────────────────────────────────────
