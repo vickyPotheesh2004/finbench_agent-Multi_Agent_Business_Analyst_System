@@ -37,10 +37,11 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+import os as _os
 MAX_RETRIES         = 3
-OLLAMA_MODEL        = "financebench-expert-v1"
+OLLAMA_MODEL        = _os.environ.get("PIV_OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_FALLBACK     = "llama3.1:8b"   # C3: Llama 3.1 8B is the constraint base model
-OLLAMA_BASE_URL     = "http://localhost:11434"
+OLLAMA_BASE_URL     = _os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 HITL_CONF_THRESHOLD = 0.65
 ITERATION_CAP       = 5
 
@@ -142,6 +143,7 @@ class OllamaClient:
                     "stream":      False,
                     "temperature": temperature,
                     "seed":        42,
+                    "keep_alive":  -1,
                 },
                 timeout=self.timeout,
             )
