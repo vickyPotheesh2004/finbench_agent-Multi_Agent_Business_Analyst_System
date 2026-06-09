@@ -298,6 +298,47 @@ def _humanize_ixbrl(name):
     if ":" in name: name = name.split(":", 1)[1]
     return re.sub(r"(?<!^)(?=[A-Z])", " ", name).lower().strip()
 
+# MOVE-2 (2026-06-09): validity guard for sniper hits.
+# Stops garbage cells from early-exiting the pipeline, e.g.:
+#   - "Recognition [Documents Inc/10-K/FY2019//53]"  (row header is prose from
+#     the "Revenue Recognition" accounting-policy section, not a line item)
+#   - "7,175 [UNKNOWN/10-K/FY2017//37]"  (company metadata is UNKNOWN/garbage)
+# A valid financial cell must (1) have a parseable number, (2) come from a cell
+# whose company is a real name (not UNKNOWN/blank/Documents Inc), and (3) not
+# have a row header that is obviously narrative prose rather than a line item.
+_BAD_COMPANY_TOKENS = {"", "unknown", "none", "n/a", "documents inc", "document inc"}
+_NARRATIVE_ROW_TOKENS = (
+    "recognition", "policy", "policies", "the following", "see note",
+    "refer to", "described", "discussion", "basis of", "estimates",
+    "summary of", "principles", "as follows", "consist of", "comprised",
+)
+
+
+def _is_valid_financial_cell(cell, pattern_name="") -> bool:
+    """Return True only if the cell looks like a genuine financial line item."""
+    if cell is None:
+        return False
+    # (1) must have a real parsed number
+    if cell.numeric_value is None:
+        # fall back to parsing the raw value once more
+        if _parse_numeric(cell.value or "") is None:
+            return False
+    # (2) company metadata must be a plausible real name
+    comp = (cell.company or "").strip().lower()
+    if comp in _BAD_COMPANY_TOKENS:
+        return False
+    # (3) row header must not be narrative prose
+    rh = (cell.row_header or "").strip().lower()
+    if not rh:
+        return False
+    if any(tok in rh for tok in _NARRATIVE_ROW_TOKENS):
+        return False
+    # (4) row header shouldn't be absurdly long (real line items are short)
+    if len(rh) > 80:
+        return False
+    return True
+
+
 # ---- Pattern preferences ----
 _PATTERN_PREFERENCES: Dict[str, Dict[str, List[str]]] = {
     "income_before_tax": {"prefer": ["incomelossfromcontinuingoperationsbeforeincometaxes"], "avoid": ["incometaxexpensebenefit"]},
@@ -521,10 +562,16 @@ class SniperRAG:
 
         if not cands: return self._miss(f"No cells matched '{mm}'")
         bc, bf = max(cands, key=lambda x: (x[1], abs(x[0].numeric_value or 0.0)))
-        if bf >= _HIT_THRESHOLD: return self._build_hit(bc, bf, mpn)
+        # MOVE-2 (2026-06-09): garbage guard — reject hits whose cell is not a
+        # real financial value (no number, junk row header, or UNKNOWN company)
+        # before they can early-exit the pipeline with text like
+        # "Recognition [Documents Inc]" or "7,175 [UNKNOWN]".
+        if bf >= _HIT_THRESHOLD and _is_valid_financial_cell(bc, mpn):
+            return self._build_hit(bc, bf, mpn)
         return SniperResult(sniper_hit=False, answer="", value=bc.value, unit=bc.unit,
                             confidence=bf, matched_pattern=mpn, cell=bc,
-                            citation=bc.metadata_key, reason=f"Conf {bf:.3f} < {_HIT_THRESHOLD}")
+                            citation=bc.metadata_key,
+                            reason=f"Conf {bf:.3f} < {_HIT_THRESHOLD} or invalid cell")
 
     def _search_segment(self, segment, pattern_name, query):
         variants = _SEGMENT_NAME_VARIANTS.get(segment, [segment])
@@ -586,8 +633,10 @@ class SniperRAG:
             if tc: cands = self._score(tc, fy, qu, cc, _CONF_EXACT, pn)
         if not cands: return self._miss(f"No primitive for '{pn}'")
         bc, bf = max(cands, key=lambda x: (x[1], abs(x[0].numeric_value or 0.0)))
-        if bf >= _HIT_THRESHOLD: return self._build_hit(bc, bf, pn)
-        return self._miss(f"Primitive '{pn}' below threshold")
+        # MOVE-2: same garbage guard on the synthetic-primitive path.
+        if bf >= _HIT_THRESHOLD and _is_valid_financial_cell(bc, pn):
+            return self._build_hit(bc, bf, pn)
+        return self._miss(f"Primitive '{pn}' below threshold or invalid cell")
 
     def _identify_metric(self, nq):
         self._current_segment = None
