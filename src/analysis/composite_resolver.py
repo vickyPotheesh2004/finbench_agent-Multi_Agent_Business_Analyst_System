@@ -225,6 +225,7 @@ def run_composite_resolver(state) -> CompositeAnswer:
                 company=company,
                 fiscal_year=fiscal_year,
                 doc_type=doc_type,
+                cells=cells,   # MOVE-5: enables segment-growth-from-tables fallback
             )
             if seg.answered:
                 return CompositeAnswer(

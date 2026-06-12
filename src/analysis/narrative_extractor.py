@@ -379,7 +379,69 @@ def extract_drivers(
         for category, _ in find_drivers_in_sentence(s):
             driver_hits.setdefault(category, []).append(s)
 
+    # ── MOVE-5 (2026-06-12): grammar anchor — the "rephrase" method ─────
+    # Gold answers lead with the MAGNITUDE ("decreased 1.7% primarily due
+    # to: ..."). Find the sentence carrying subject + percent + change verb,
+    # and quote its causal clause verbatim instead of only abstract labels.
+    _DOWN_VERBS = ("decreas", "declin", "fell", "dropp", "deteriorat",
+                   "contract", "shrunk", "shrank", "lower")
+    _UP_VERBS   = ("increas", "improv", "grew", "rose", "expand", "higher")
+    mag_pct: Optional[str] = None
+    mag_dir = ""
+    mag_sentence = ""
+    for s in (causal_sentences + subj_sentences)[:40]:
+        s_lc = s.lower()
+        if subject_lc not in s_lc:
+            continue
+        m = re.search(
+            r"(-?\d{1,3}(?:\.\d+)?)\s*(?:%|percent(?:age)?(?:\s+points?)?|pp\b)",
+            s_lc,
+        )
+        if not m:
+            continue
+        if any(v in s_lc for v in _DOWN_VERBS):
+            mag_dir = "decreased"
+        elif any(v in s_lc for v in _UP_VERBS):
+            mag_dir = "increased"
+        else:
+            continue
+        mag_pct = m.group(1).lstrip("-")
+        mag_sentence = s
+        break
+
+    causal_clause = ""
+    _CLAUSE_MARKERS = ("primarily due to", "primarily driven by",
+                       "principally due to", "largely due to",
+                       "mainly due to", "driven by", "due to",
+                       "attributable to", "as a result of", "because of")
+    for s in ([mag_sentence] if mag_sentence else []) + causal_sentences:
+        s_lc2 = s.lower()
+        for marker in _CLAUSE_MARKERS:
+            idx = s_lc2.find(marker)
+            if idx >= 0:
+                causal_clause = s[idx: idx + 220].strip().rstrip(",;")
+                break
+        if causal_clause:
+            break
+    # ── end MOVE-5 anchor ──
+
     if not driver_hits:
+        # MOVE-5: even without vocabulary matches, a magnitude + clause is
+        # a real answer ("Operating margin decreased 1.7%, primarily due
+        # to ..."). Use it before falling back to the longest sentence.
+        if mag_pct and causal_clause:
+            _out = (f"{subject.capitalize()} {mag_dir} {mag_pct}%, "
+                    f"{causal_clause}.")
+            _cit = f"{company}/{doc_type}/{fiscal_year}/MD&A/drivers"
+            return NarrativeAnswer(
+                answered=True,
+                output=f"{_out} [{_cit}]",
+                drivers=[],
+                evidence_sentences=[mag_sentence] if mag_sentence else [],
+                confidence=0.6,
+                audit_trail={"subject": subject,
+                             "reason": "MOVE-5 magnitude+clause anchor"},
+            )
         # Fallback: return the most informative causal sentence verbatim
         best_sentence = max(causal_sentences, key=len)
         return NarrativeAnswer(
@@ -427,7 +489,13 @@ def extract_drivers(
     drivers_human = [driver_label_map.get(c, c) for c in sorted_drivers]
 
     # Build the final answer string
-    if len(drivers_human) == 1:
+    # MOVE-5: lead with the magnitude + verbatim causal clause when found.
+    if mag_pct and causal_clause:
+        output = (f"{subject.capitalize()} {mag_dir} {mag_pct}%, "
+                  f"{causal_clause}.")
+        if drivers_human:
+            output += f" Key drivers: {', '.join(drivers_human)}."
+    elif len(drivers_human) == 1:
         output = f"{subject.capitalize()} was driven by {drivers_human[0]}."
     elif len(drivers_human) == 2:
         output = f"{subject.capitalize()} was driven by {drivers_human[0]} and {drivers_human[1]}."
@@ -530,10 +598,20 @@ def extract_segment_answer(
     company: str = "",
     fiscal_year: str = "",
     doc_type: str = "",
+    cells: Optional[List[Dict]] = None,
 ) -> NarrativeAnswer:
     """
     Handle "which segment dragged growth?" style questions.
     Best-effort: scans for segment names + growth/decline words.
+
+    MOVE-5 (2026-06-12) — the "rephrase to understand" method:
+      1. "exclude M&A / acquisitions" REPHRASES to "organic growth" — when
+         the question says it, prefer sentences containing "organic".
+      2. A segment sentence with NO percent is not an answer — reject
+         pct==0 candidates when any candidate has a real number (the old
+         code answered "grew by n/a" from a section-header fragment).
+      3. Fallback: compute per-segment growth from TABLE CELLS (segment
+         revenue tables), so prose parsing failures don't end the question.
     """
     if not detect_segment_question(question):
         return NarrativeAnswer(answered=False)
@@ -578,6 +656,12 @@ def extract_segment_answer(
 
     sentences = _split_sentences(corpus)
 
+    # MOVE-5: does the question rephrase to ORGANIC growth?
+    organic_needed = bool(re.search(
+        r"\borganic\b|exclud\w*\s+(?:the\s+impact\s+of\s+)?(?:m\s*&\s*a|acquisitions?|divestitures?)",
+        q_lc,
+    ))
+
     # Find sentences with segment hints AND growth language
     candidates: List[Tuple[str, str, float]] = []   # (segment, sentence, percent_pp)
     for s in sentences:
@@ -592,13 +676,28 @@ def extract_segment_answer(
 
         # Find a percent number nearby
         m_pct = re.search(r"(-?\d{1,3}(?:\.\d+)?)\s*%", s)
-        pct = float(m_pct.group(1)) if m_pct else 0.0
+        if not m_pct:
+            # MOVE-5: a sentence without a number cannot answer a
+            # "which segment grew/shrunk most" question — skip it.
+            continue
+        pct = float(m_pct.group(1))
 
         # Bias by direction
-        if "declin" in s_lc or "fell" in s_lc or "decreas" in s_lc or "shrunk" in s_lc:
+        if "declin" in s_lc or "fell" in s_lc or "decreas" in s_lc or "shrunk" in s_lc or "shrank" in s_lc:
             pct = -abs(pct)
 
         candidates.append((seg_name, s, pct))
+
+    # MOVE-5: organic rephrasing — if the question excludes M&A, prefer the
+    # sentences that talk about organic growth.
+    if organic_needed and candidates:
+        organic_cands = [c for c in candidates if "organic" in c[1].lower()]
+        if organic_cands:
+            candidates = organic_cands
+
+    # MOVE-5: fallback — compute per-segment growth from table cells
+    if not candidates and cells:
+        candidates = _segment_candidates_from_cells(cells, segment_hints)
 
     if not candidates:
         return NarrativeAnswer(
@@ -638,6 +737,71 @@ def extract_segment_answer(
             "looking_for":   "lowest" if looking_for_low else "highest",
         },
     )
+
+
+def _parse_cell_value(raw) -> Optional[float]:
+    """MOVE-5: parse a table-cell value like '$ (1,234.5)' → -1234.5."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    neg = "(" in s and ")" in s
+    s = re.sub(r"[\$\s\(\)%,]", "", s)
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -abs(v) if neg else v
+
+
+def _segment_candidates_from_cells(
+    cells: List[Dict],
+    segment_hints: List[str],
+) -> List[Tuple[str, str, float]]:
+    """MOVE-5: compute per-segment growth from segment revenue TABLES.
+    Groups cells whose row_header contains a known segment name by the
+    4-digit year in their col_header, then computes growth between the
+    two most recent years. Deterministic; returns [] on any doubt."""
+    by_seg: Dict[str, Dict[int, float]] = {}
+    for c in cells or []:
+        if isinstance(c, dict):
+            rh = str(c.get("row_header", "")).lower()
+            ch = str(c.get("col_header", ""))
+            val = _parse_cell_value(c.get("value"))
+        else:
+            rh = str(getattr(c, "row_header", "")).lower()
+            ch = str(getattr(c, "col_header", ""))
+            val = _parse_cell_value(getattr(c, "value", None))
+        if val is None or not rh:
+            continue
+        seg = next((h for h in segment_hints if h in rh), None)
+        if not seg:
+            continue
+        ym = re.search(r"(19|20)\d{2}", ch)
+        if not ym:
+            continue
+        year = int(ym.group(0))
+        # Keep the LARGEST abs value per (segment, year) — segment revenue
+        # dominates margin/percent rows that share the header.
+        cur = by_seg.setdefault(seg, {})
+        if year not in cur or abs(val) > abs(cur[year]):
+            cur[year] = val
+
+    out: List[Tuple[str, str, float]] = []
+    for seg, years in by_seg.items():
+        if len(years) < 2:
+            continue
+        ys = sorted(years.keys())
+        y1, y0 = ys[-2], ys[-1]            # prior, latest
+        v1, v0 = years[y1], years[y0]
+        if abs(v1) < 1e-9:
+            continue
+        pct = (v0 - v1) / abs(v1) * 100.0
+        evidence = (f"computed from segment table: {seg} {y1}={v1:,.0f} "
+                    f"→ {y0}={v0:,.0f}")
+        out.append((seg, evidence, round(pct, 1)))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
