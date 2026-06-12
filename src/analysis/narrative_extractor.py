@@ -618,10 +618,11 @@ def extract_segment_answer(
 
     corpus = _gather_search_text(raw_text, bm25_results, "segment")
     if not corpus:
-        return NarrativeAnswer(
-            answered=False,
-            audit_trail={"reason": "empty corpus"},
-        )
+        # MOVE-5 fix (2026-06-12): some texts never use the literal word
+        # "segment", which left the corpus empty and bailed out before the
+        # candidate scan and the cells fallback could run. Scan raw_text
+        # directly instead of giving up.
+        corpus = (raw_text or "")[:80000]
 
     q_lc = question.lower()
     looking_for_low = any(

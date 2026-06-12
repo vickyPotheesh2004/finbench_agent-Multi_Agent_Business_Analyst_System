@@ -264,9 +264,15 @@ def _extract_metric_from_raw_text(
             candidates.append(val)
         if not candidates:
             continue
-        if floor > 0.0:
-            # mega metric: prefer the largest plausible value
+        if metric_id in _LARGEST_WINS:
+            # Balance-sheet dominance: the LARGEST plausible value wins
+            # (e.g. $8,700M PPE beats a stray "63" note reference).
             return max(candidates, key=lambda x: abs(x))
+        # MOVE-5 fix (2026-06-12): flow/income metrics (capex, net income,
+        # operating income) take the FIRST sane number after the synonym —
+        # PROXIMITY wins. "Capex totaled $1,749M. Net sales were $34,229M"
+        # sits in one window; largest-wins returned 34,229 for CAPEX and
+        # produced the absurd "capital intensity 100.0%" self-test answer.
         return candidates[0]
     return None
 
@@ -304,6 +310,15 @@ _MEGA_FLOORS = {
     "net_income": 5.0,
     "operating_income": 5.0,
     "capex": 5.0,
+}
+
+# MOVE-5 (2026-06-12): only BALANCE-SHEET items keep "largest wins" — their
+# true value dominates stray note references. Flow/income items (capex,
+# net_income, operating_income) must use PROXIMITY instead, because their
+# window often also contains the much larger revenue figure.
+_LARGEST_WINS = {
+    "revenue", "total_assets", "total_liabilities", "shareholders_equity",
+    "ppe", "cogs", "current_assets", "current_liabilities",
 }
 
 
