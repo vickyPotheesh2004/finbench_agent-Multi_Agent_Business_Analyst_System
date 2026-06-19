@@ -135,7 +135,7 @@ def _confidence_label(conf: float) -> str:
 
 
 def _check_ollama() -> dict:
-    """Check if Ollama/Gemma4 is running."""
+    """Check if Ollama/Llama 3.1 8b is running."""
     try:
         from src.utils.llm_client import get_llm_client
         client = get_llm_client()
@@ -162,7 +162,7 @@ def _run_ingestion(document_path: str, metadata: dict) -> dict:
         from src.ingestion.chunker              import Chunker
         from src.state.ba_state                 import BAState
 
-        # Optional Gemma4 client for chart vision
+        # Optional Llama 3.1 8b client for chart vision
         llm_client = None
         if metadata.get("enable_images"):
             try:
@@ -210,15 +210,15 @@ with col_h1:
     st.markdown('<div class="main-header">FinBench Analyst AI</div>',
                 unsafe_allow_html=True)
     st.markdown('<div class="sub-header">'
-                'Multi-Agent Business Analyst · Gemma4 · 100% Local · $0 Cost'
+                'Multi-Agent Business Analyst · Llama 3.1 8b · 100% Local · $0 Cost'
                 '</div>', unsafe_allow_html=True)
 
 with col_h2:
     health = _check_ollama()
     if health.get("available"):
-        st.success("🟢 Gemma4 Online")
+        st.success("🟢 Llama 3.1 8b Online")
     else:
-        st.warning("🟡 Gemma4 Offline")
+        st.warning("🟡 Llama 3.1 8b Offline")
         st.caption("Start: `ollama serve`")
 
 
@@ -301,7 +301,7 @@ if st.session_state.screen == "upload":
         enable_images = st.checkbox(
             "🖼 Enable OCR + Chart Vision",
             value = False,
-            help  = "Slower but extracts data from scanned pages and charts. Requires Tesseract + Gemma4.",
+            help  = "Slower but extracts data from scanned pages and charts. Requires Tesseract + Llama 3.1 8b.",
         )
 
     st.divider()
@@ -622,5 +622,5 @@ elif st.session_state.screen == "results":
 st.divider()
 st.caption(
     "FinBench Multi-Agent Business Analyst AI · PDR-BAAAI-001 Rev 1.0 · "
-    "Gemma4 local · No document ever leaves your machine"
+    "Llama 3.1 8b local · No document ever leaves your machine"
 )

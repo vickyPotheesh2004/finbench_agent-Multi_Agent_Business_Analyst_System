@@ -278,6 +278,33 @@ def overlap_score(
     return len(p & g) / len(p | g)
 
 
+# MOVE-7 (2026-06-13): abstention / non-answer guard.
+# The LLM often replies "it is not possible to determine ..." or "no explicit
+# information ...". The old grader then scored these against a real gold answer
+# via word-overlap and handed out FALSE positives (e.g. a "can't determine"
+# reply matched gold "the quick ratio was 0.96"). A non-answer must NEVER count
+# as correct, and RETRIEVAL_MISS likewise. This makes the score HONEST.
+_ABSTAIN_MARKERS = (
+    "not possible to determine", "cannot be determined",
+    "cannot determine", "can't determine", "unable to determine",
+    "no explicit", "not explicitly", "no information",
+    "no specific information", "not enough information",
+    "insufficient information", "not provided", "is unclear",
+    "it is unclear", "cannot be calculated", "cannot calculate",
+    "not available", "no mention", "not mentioned",
+    "does not provide", "is not provided", "not specified",
+    "retrieval_miss", "context insufficient",
+)
+
+
+def _is_non_answer(predicted: str) -> bool:
+    """True if the prediction is an abstention / 'I don't know' style reply."""
+    if not predicted:
+        return True
+    pl = predicted.lower()
+    return any(marker in pl for marker in _ABSTAIN_MARKERS)
+
+
 def is_correct(
     predicted: str,
     gold: str,
@@ -288,6 +315,18 @@ def is_correct(
         return (
             False,
             "empty",
+            0.0,
+        )
+
+    # MOVE-7: a non-answer can never be correct. Guard runs BEFORE overlap
+    # scoring so "it is not possible to determine..." stops stealing credit
+    # from a gold answer that contains a real value. EXCEPTION: if the gold
+    # answer is ITSELF an abstention (rare), fall through to overlap so a
+    # genuine "cannot be determined" match still counts.
+    if _is_non_answer(predicted) and not _is_non_answer(gold):
+        return (
+            False,
+            "non_answer",
             0.0,
         )
 
