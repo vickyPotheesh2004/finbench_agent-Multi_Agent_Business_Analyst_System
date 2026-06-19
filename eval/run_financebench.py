@@ -776,6 +776,49 @@ def run_eval(args):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _classify_failure(r):
+    """GOLD/SILVER/DIAMOND triage (babe's idea, 2026-06-13).
+
+    Every run auto-sorts each MISS into a fix-priority bucket so we always
+    know WHAT to fix next instead of guessing:
+      GOLD    = correct number present but format/grader mismatch → easy, high value
+      SILVER  = right approach, wrong cell/period/value         → medium
+      DIAMOND = genuine reasoning miss / abstain / LLM ceiling   → hard
+    """
+    pred = str(r.get("predicted", "") or "")
+    gold = str(r.get("gold", "") or "")
+    mt   = r.get("match_type", "")
+
+    if r.get("correct"):
+        return None
+
+    # DIAMOND: nothing useful produced (abstain / retrieval miss / empty)
+    if mt in ("non_answer", "empty", "exception") or _is_non_answer(pred) \
+            or "RETRIEVAL_MISS" in pred:
+        return "DIAMOND"
+
+    pred_num = normalize_number(pred)
+    gold_num = normalize_number(gold)
+
+    # GOLD: both have numbers and they're CLOSE but the grader didn't pass
+    # (scale / format / rounding) → the value is essentially right.
+    if pred_num and gold_num:
+        try:
+            pf, gf = float(pred_num), float(gold_num)
+            if abs(gf) > 1e-9 and abs(pf - gf) / abs(gf) < 0.10:
+                return "GOLD"          # within 10% — format/scale issue
+        except Exception:
+            pass
+        return "SILVER"                # both numeric but far apart → wrong cell
+
+    # SILVER: we produced a numeric answer but gold is text (or vice-versa)
+    if pred_num or gold_num:
+        return "SILVER"
+
+    # DIAMOND: pure text-vs-text reasoning miss
+    return "DIAMOND"
+
+
 def write_summary(
     results,
     output_dir,
@@ -794,6 +837,13 @@ def write_summary(
 
     accuracy = correct / n
 
+    # babe's GOLD/SILVER/DIAMOND triage
+    buckets = {"GOLD": [], "SILVER": [], "DIAMOND": []}
+    for r in results:
+        tier = _classify_failure(r)
+        if tier:
+            buckets[tier].append(r)
+
     summary_path = (
         output_dir
         / (
@@ -808,7 +858,25 @@ def write_summary(
         f"Questions: {n}",
         f"Correct: {correct}",
         f"Accuracy: {100 * accuracy:.2f}%",
+        "",
+        "## Fix-Priority Triage (GOLD = easiest wins)",
+        "",
+        f"🥇 GOLD   ({len(buckets['GOLD'])}): right number, format/scale mismatch — fix the grader/formatter",
+        f"🥈 SILVER ({len(buckets['SILVER'])}): right approach, wrong cell/period — fix extraction targeting",
+        f"💎 DIAMOND ({len(buckets['DIAMOND'])}): reasoning miss / abstain — LLM ceiling, hardest",
+        "",
+        "### 🥇 GOLD fixes (do these first — points are basically earned):",
     ]
+    for r in buckets["GOLD"]:
+        lines.append(f"- PRED `{str(r.get('predicted',''))[:45]}` | GOLD `{str(r.get('gold',''))[:45]}`")
+    lines.append("")
+    lines.append("### 🥈 SILVER fixes (wrong cell/period):")
+    for r in buckets["SILVER"]:
+        lines.append(f"- PRED `{str(r.get('predicted',''))[:45]}` | GOLD `{str(r.get('gold',''))[:45]}`")
+    lines.append("")
+    lines.append("### 💎 DIAMOND (LLM-ceiling reasoning):")
+    for r in buckets["DIAMOND"]:
+        lines.append(f"- PRED `{str(r.get('predicted',''))[:45]}` | GOLD `{str(r.get('gold',''))[:45]}`")
 
     summary_path.write_text(
         "\n".join(lines),
@@ -816,6 +884,11 @@ def write_summary(
     )
 
     print()
+    print("=" * 80)
+    print(f"🥇 GOLD (easy):   {len(buckets['GOLD'])}")
+    print(f"🥈 SILVER (med):  {len(buckets['SILVER'])}")
+    print(f"💎 DIAMOND (hard): {len(buckets['DIAMOND'])}")
+    print("=" * 80)
     print(summary_path)
 
 # ─────────────────────────────────────────────────────────────────────────────
