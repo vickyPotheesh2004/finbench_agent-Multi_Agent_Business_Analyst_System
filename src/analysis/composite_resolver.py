@@ -69,6 +69,17 @@ except Exception:
     _ql_parse_question = None
     _HAS_QUESTION_LIB = False
 
+# Question simplifier (2026-06-13): rewrites twisted FinanceBench phrasing into
+# clean canonical form BEFORE routing/classification, so the deterministic
+# resolvers and (later) the LLM see the simple version. Safe: returns the
+# original untouched if it can't simplify confidently.
+try:
+    from src.analysis.question_simplifier import simplify_question as _simplify
+    _HAS_SIMPLIFIER = True
+except Exception:
+    _simplify = None
+    _HAS_SIMPLIFIER = False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Composite answer dataclass
@@ -141,11 +152,26 @@ def run_composite_resolver(state) -> CompositeAnswer:
         if not question:
             return CompositeAnswer(answered=False)
 
+        # 2026-06-13: simplify twisted phrasing BEFORE routing. We keep the
+        # ORIGINAL for citation/audit but route on the simplified text. If the
+        # simplifier changed nothing, this is a no-op.
+        original_question = question
+        if _HAS_SIMPLIFIER and _simplify is not None:
+            try:
+                sq = _simplify(question)
+                if sq and sq.simplified and sq.changed:
+                    logger.info("[composite] simplified: %r -> %r",
+                                original_question[:60], sq.simplified[:60])
+                    question = sq.simplified
+            except Exception:
+                logger.debug("[composite] simplifier failed", exc_info=True)
+
         company     = getattr(state, "company_name", "") or ""
         fiscal_year = getattr(state, "fiscal_year",  "") or ""
         doc_type    = getattr(state, "doc_type",     "") or ""
         raw_text    = getattr(state, "raw_text",     "") or ""
         cells       = getattr(state, "table_cells",  None) or []
+        structured_tables = getattr(state, "structured_tables", None) or []
         bm25_results = getattr(state, "bm25_results", None) or []
 
         qtype = classify_question(question)
@@ -239,15 +265,20 @@ def run_composite_resolver(state) -> CompositeAnswer:
 
         # ── Fall through: not a composite question (numeric / "other") ─
         # ── Try question_lib as a LAST RESORT for COMPUTE / PROJECT  ─
+        # NOTE: question_lib needs the ORIGINAL question text — it parses
+        # exact periods ("FY2017 - FY2019"), metric names and operations that
+        # the simplifier may have collapsed. Routing above uses the simplified
+        # text; computation here uses the original.
         if _HAS_QUESTION_LIB and _ql_answer_question is not None:
             try:
                 ql_res = _ql_answer_question(
-                    question=question,
+                    question=original_question,
                     cells=cells,
                     raw_text=raw_text,
                     company=company,
                     fiscal_year=fiscal_year,
                     doc_type=doc_type,
+                    structured_tables=structured_tables,
                 )
                 if ql_res and ql_res.answered:
                     logger.info("[composite] question_lib HIT | answer=%s",
