@@ -172,6 +172,16 @@ class PDFIngestor:
             [],
         )
 
+        # Structure-preserving tables (2026-06-13) — additive; safe if the
+        # state model lacks the field on older builds.
+        try:
+            state.structured_tables = result.get(
+                "structured_tables",
+                [],
+            )
+        except Exception:
+            pass
+
         state.heading_positions = (
             result.get(
                 "heading_positions",
@@ -363,6 +373,8 @@ class PDFIngestor:
 
         table_cells = []
 
+        structured_tables = []
+
         heading_positions = []
 
         # Text + Tables
@@ -458,6 +470,41 @@ class PDFIngestor:
                         # only one row (no header row to peel off).
                         if not table:
                             continue
+
+                        # Structure-preserving capture (2026-06-13):
+                        # keep the FULL table shape before flattening, so
+                        # downstream column/period-aware selection can tell
+                        # FY2022 from FY2021 columns (fixes wrong-year picks).
+                        # Additive — the flatten loop below is untouched.
+                        try:
+                            clean_rows = [
+                                [
+                                    (str(c).strip() if c else "")
+                                    for c in row
+                                ]
+                                for row in table
+                                if row
+                            ]
+                            if clean_rows:
+                                structured_tables.append(
+                                    {
+                                        "page": page_num,
+                                        "table_number": table_idx,
+                                        "headers": clean_rows[0],
+                                        "rows": (
+                                            clean_rows[1:]
+                                            if len(clean_rows) > 1
+                                            else clean_rows
+                                        ),
+                                        "n_rows": len(clean_rows),
+                                        "n_cols": max(
+                                            (len(r) for r in clean_rows),
+                                            default=0,
+                                        ),
+                                    }
+                                )
+                        except Exception:
+                            pass
 
                         if len(table) >= 2:
                             headers = [
@@ -644,6 +691,9 @@ class PDFIngestor:
         return {
             "raw_text": raw_text,
             "table_cells": table_cells[
+                :MAX_TABLES
+            ],
+            "structured_tables": structured_tables[
                 :MAX_TABLES
             ],
             "heading_positions": self._dedupe_headings(

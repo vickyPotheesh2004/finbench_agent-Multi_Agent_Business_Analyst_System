@@ -80,6 +80,11 @@ class BAState(BaseModel):
     page_count:            int        = 0
     extracted_images:      List[Dict] = Field(default_factory=list)
     table_cells:           List[Dict] = Field(default_factory=list)
+    # Structure-preserving tables (2026-06-13): each entry keeps the FULL
+    # table shape -> {page, table_number, headers: [...], rows: [[...]]}.
+    # Additive: table_cells (flattened) stays for fast lookup; this enables
+    # column/period-aware selection (fixes wrong-year cell picks).
+    structured_tables:     List[Dict] = Field(default_factory=list)
     heading_positions:     List[Dict] = Field(default_factory=list)
     section_tree:          Dict       = Field(default_factory=dict)
     chunk_count:           int        = 0
