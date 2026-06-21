@@ -1172,23 +1172,46 @@ class PDFIngestor:
 
         snippet = text[:5000]
 
-        patterns = [
-            r"((?:[A-Z][a-zA-Z&,\-]+\s*){1,6}(?:Inc|Corp|Corporation|Ltd|LLC|Company|Holdings|Group)\.?)",
-        ]
+        # FIX (2026-06-21): the old single greedy regex matched the FIRST
+        # "...Inc|Corp|LLC" phrase in the cover page, which is often exchange
+        # boilerplate from the "securities registered" block (e.g. "The NASDAQ
+        # Stock Market LLC", "New York Stock Exchange LLC") rather than the
+        # filer. Two improvements:
+        #   1. Prefer the registrant name that 10-K cover pages print right
+        #      before "(Exact name of registrant as specified in its charter)".
+        #   2. Reject known exchange / boilerplate phrases.
+        _BOILERPLATE = (
+            "nasdaq", "new york stock exchange", "nyse",
+            "stock market", "stock exchange", "securities exchange",
+            "the depository trust", "cboe",
+        )
 
-        for pattern in patterns:
+        def _is_boilerplate(name: str) -> bool:
+            low = name.lower()
+            return any(b in low for b in _BOILERPLATE)
 
-            match = re.search(
-                pattern,
-                snippet,
-            )
+        # 1. Registrant line: "<NAME>\n(Exact name of registrant ...)"
+        reg = re.search(
+            r"([A-Z][A-Za-z0-9&.,\-\s]{2,80}?)\s*\n?\s*\(\s*Exact name of",
+            snippet,
+            re.I,
+        )
+        if reg:
+            cand = reg.group(1).strip().strip(",").strip()
+            # keep only the last line (the name sits just above the marker)
+            cand = cand.splitlines()[-1].strip() if cand else cand
+            if cand and not _is_boilerplate(cand):
+                return cand
 
-            if match:
-
-                return (
-                    match.group(1)
-                    .strip()
-                )
+        # 2. Fallback: first corporate-suffix phrase that is NOT boilerplate.
+        pattern = (
+            r"((?:[A-Z][a-zA-Z&,\-]+\s*){1,6}"
+            r"(?:Inc|Corp|Corporation|Ltd|LLC|Company|Holdings|Group)\.?)"
+        )
+        for match in re.finditer(pattern, snippet):
+            cand = match.group(1).strip()
+            if cand and not _is_boilerplate(cand):
+                return cand
 
         return ""
 

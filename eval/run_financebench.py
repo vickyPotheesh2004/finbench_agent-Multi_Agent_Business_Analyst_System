@@ -477,6 +477,35 @@ def load_questions(
 
 def run_eval(args):
 
+    # ── LLM PREFLIGHT (2026-06-21) ──────────────────────────────────────
+    # The #1 cause of fake-low scores (13.3%) was Ollama being down or the
+    # model name not matching what was pulled -> is_available() False ->
+    # every question silently became RETRIEVAL_MISS. Check LOUDLY up front
+    # and prewarm, so a broken LLM aborts in 10s instead of wasting 27 min.
+    if not os.environ.get("SNIPER_ONLY"):
+        try:
+            from src.utils.llm_client import get_llm_client, prewarm_model, DEFAULT_MODEL
+            client = get_llm_client()
+            print(f"[PREFLIGHT] Checking Ollama for model '{DEFAULT_MODEL}' ...")
+            if not client.is_available():
+                print("=" * 80)
+                print("  LLM PREFLIGHT FAILED - Ollama not available or model missing")
+                print(f"  Expected model: {DEFAULT_MODEL}")
+                print("  Fix: start `ollama serve` and run `ollama pull "
+                      f"{DEFAULT_MODEL}`")
+                print("  (or run with --sniper-only to skip the LLM entirely)")
+                print("=" * 80)
+                raise SystemExit("LLM preflight failed - aborting to avoid a fake-low score.")
+            print("[PREFLIGHT] Ollama OK. Prewarming model (cold-start can take 60-120s)...")
+            if prewarm_model():
+                print("[PREFLIGHT] Model warm. Proceeding with eval.")
+            else:
+                print("[PREFLIGHT] WARNING: prewarm returned no output, continuing anyway.")
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"[PREFLIGHT] WARNING: could not run LLM preflight ({_e}). Continuing.")
+
     questions = load_questions(
         limit=args.limit,
     )

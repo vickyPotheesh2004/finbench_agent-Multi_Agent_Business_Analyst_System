@@ -1,25 +1,203 @@
 # CONTEXT.md — FinBench Multi-Agent Business Analyst AI
-# PDR-BAAAI-001 · Rev 1.0 · Session State File
-# Last updated: 2026-06-05 evening (v5 — post-eval bug hunt + N20 + honest goals)
+# PDR-BAAAI-001 · Rev 1.1 · Session State File
+# Last updated: 2026-06-21 (v10 — SILVER extraction bugs fixed in plan_executor)
+
+## SESSION_2026-06-21_FINAL_DETERMINISTIC_STATE (measured, offline, no LLM)
+Real FinanceBench 30-Q slice via diag_real_silver.py (deterministic only):
+  COUNT: 10 PASS / 16 ABSTAIN / 4 SILVER.  (started session at 4 PASS -> 10.)
+  VERIFIED via diag_verify.py: Amazon DPO 93.86 (exact), Activision
+  fixed-asset-turnover 24.26 (exact), AES inv-turnover 9.54 (held).
+  Fix that unlocked DPO+turnover: _raw_lookup_max reads the YEAR-COLUMN
+  HEADER tokens (not magnitude) to order balance-sheet runs, + fixed_asset_
+  turnover/dpo pass anchor_year=t so prior-year operands map correctly.
+  inventory + ppe added to _PREFER_RAW_MAX (balance-sheet total beats the
+  cash-flow/sub-line the table extractor grabbed).
+  Remaining 4 SILVER: Activision 3yr-capex 2.1% vs 1.9% (2017 capex not
+  extracted), 3M quick ratio 0.95 vs 0.96 (rounding), Amcor EBITDA +
+  'real growth flat' (both NARRATIVE -> need LLM).
+
+## SESSION_2026-06-21_EARLIER (superseded by line above)
+Real FinanceBench 30-Q slice via diag_real_silver.py (deterministic only):
+  COUNT: 8 PASS / 16 ABSTAIN / 6 SILVER.  (started session at 4 PASS.)
+
+CONFIRMED PASS (real gold): 3M capex $1577, 3M PPE $8.87B, Adobe OCF 0.66 &
+  0.83, AES inventory turnover 9.54 (gold 9.5), AES ROA ~0.00 (gold -0.02),
+  Amazon revenue YoY 30.8%, Amazon net income $11,588M.
+
+REMAINING 6 SILVER (4 precision misses, 2 narrative):
+  - Amazon DPO 95.86 vs 93.86  (2% off - AP/inv precision, near-correct)
+  - 3M quick ratio 0.95 vs 0.96 (rounding)
+  - Activision fixed-asset-turnover 25.65 vs 24.26 (avg PP&E precision)
+  - Activision 3yr-capex 2.1% vs 1.9% (precision)
+  - Amcor EBITDA (narrative '$2,018mn' sentence) -> needs LLM
+  - Amcor 'real growth flat' (pure narrative) -> needs LLM
+
+KEY FIXES THIS SESSION (all in fina_question_lib/src/question_lib/):
+  - table_normalizer.py: NEW post-extraction normalization layer. Builds one
+    clean {(metric,year):value_in_millions} map per doc. Fixes: year-junk
+    filtering (anchor [fy-6,fy]), canonical consecutive-year run, expense
+    parenthesis handling (keep_negatives - AES 'Total cost of sales (10,069)'
+    was dropped, came out as tiny 504 sub-line -> now 10069), magnitude-wins
+    for cogs/accounts_payable only (NOT current_assets/liabilities - those
+    regressed Amcor). _store total-priority + first-write.
+  - advanced_formulas.py: NEW multi-year solver (ROA/DPO/turnover/YoY/capex%).
+    Synthetic self-test hits EVERY gold exactly. Has raw_text fallback
+    (_raw_lookup / _raw_lookup_max) for operands the table extractor misses:
+    Amazon balance-sheet AP 34,616 (table only had cash-flow 7,175). Quick-
+    ratio sanity bound [0.1,5] -> abstain on garbage instead of confident lie.
+  - registry.answer_question: advanced solver runs FIRST, falls through to
+    plan_executor. Wired through N20 composite_resolver -> pipeline.
+
+ROOT-CAUSE LEARNING: pdfplumber extraction is NOT the problem - it extracts
+  the rows correctly (verified: 'Total cost of sales (10,069)', 'Accounts
+  payable $ 25,309 $ 34,616' both present). The bug was INTERPRETATION:
+  parenthesized expenses treated as stop-signal, and cash-flow 'change in X'
+  rows beating balance-sheet totals. Fixed in the normalizer, NOT pdfplumber.
+
+HONEST CEILING: deterministic engine is ~maxed at 8-9 PASS. Remaining SILVER
+  are precision (fractions of a %) or narrative (need LLM). The 16 ABSTAIN are
+  the real lever - mostly DIAMOND narrative/reasoning the LLM is built for.
+  NEXT: run real eval with Ollama ON (never been run). That grows the score.
+
+## LLM_READINESS_AUDIT_2026-06-21
+Full audit of the LLM path for Colab/local. VERDICT: aligned.
+  - Model name CONSISTENT: llm_client.py DEFAULT_MODEL='llama3.1:8b' AND
+    piv_loop.py OLLAMA_MODEL='llama3.1:8b'. Both have 404->fallback.
+  - Endpoint: both hit localhost:11434 (/api/chat + /api/generate, both valid).
+  - Determinism: seed=42, temp 0.1 in both. Reproducible.
+  - Resilience: circuit breaker (3 fails), 30s availability cache, early-exit
+    on empty chunks + repeated RETRIEVAL_MISS. prewarm_model() exists.
+  - ADDED: LLM PREFLIGHT in run_financebench.py run_eval() - aborts LOUDLY in
+    ~10s if Ollama down/model missing, instead of silent 30 RETRIEVAL_MISS
+    (the cause of the fake 13.3%). Skipped under --sniper-only.
+  - SOFT SPOT: PIV validator defaults to VALIDATOR_PASS when LLM empty.
+  - WHY PRIOR RUNS = 13.3%: Colab had Ollama OFF + FlagEmbedding missing +
+    model not pulled. Environmental, NOT code. Local Windows has all of it.
+  - CORRECT COLAB: install ollama -> serve -> `ollama pull llama3.1:8b`
+    (EXACT name) -> `pip install FlagEmbedding` -> run eval. Use T4 GPU.
+
+## ADVANCED_FORMULA_ENGINE_2026-06-21 (question_lib/advanced_formulas.py)
+New multi-year solver wired into answer_question (runs first, falls through).
+SYNTHETIC: every formula hit gold EXACTLY (ROA -0.02, fixed_asset_turnover
+24.26, DPO 93.86, revenue YoY 30.8%, op-income YoY 65.4%).
+Real eval slice went 4 PASS -> 8 PASS. Still operand-extraction issues on
+Adobe op-income YoY, Activision fixed-asset-turnover (PP&E), AES inventory
+turnover (COGS row), Amazon DPO (AP row), Amcor quick ratio. Normalizer +
+_store + doc-year fixes applied; re-verify via diag_operands + diag_real_silver.
+2 SILVER genuinely NARRATIVE (Amcor EBITDA sentence, 'real growth flat') - LLM.
+
+## SESSION_2026-06-21 — SILVER EXTRACTION FIXES (per-question proven)
+All fixes in D:\projects\fina_question_lib\src\question_lib\plan_executor.py.
+Proven on the REAL failing PDFs via diagnostics, NOT yet on full benchmark.
+
+  FIX-A  _lookup_structured now finds the year column when the year sits in a
+         DATA row, not the header row (only 5/116 Adobe tables had year in
+         header). Recovers ~111/116 tables.
+  FIX-B  RATIO/RATIO_PCT abstain (return None) when an operand is ~0 instead of
+         emitting a confident 0.00 (Adobe OCF was 0.00 @ conf 1.0).
+  FIX-C v2  Per-operand magnitude normalization: a single ratio operand
+         >= 1,000,000 ($1T in millions) must be in thousands -> /1000. Judges
+         each operand alone (gap-based v1 wrongly broke 5000/12 and 2000/2.0;
+         v2 passes 9/9 regression in diag_silver_regression.py).
+  FIX-D v2  CRITICAL SYSTEM-WIDE: synonyms file stores anti-patterns under key
+         "anti" but code read "negative" -> ALL anti-patterns were dead code
+         everywhere. Now reads "anti". Plus new _anti_blocks() helper applies
+         anti-patterns in the raw_text scan (was unfiltered). This is why
+         "operating income" matched "non-operating income" -> 13.5. Fixing the
+         key activates anti-filtering for EVERY metric, not just this one.
+
+  CONFIRMED per-question (real PDFs, offline, no LLM):
+    Adobe 2015 OCF ratio   0.00  -> 0.66   (gold 0.66) ✓
+    Adobe 2017 OCF ratio   0.00  -> 0.83   (gold 0.83) ✓
+    Adobe 2016 op margin   $13.5 -> 25.51% (real op margin; gold 65.4% is
+                                            likely GROSS margin = diff question)
+    Activision rev growth  $2,381M -> ABSTAIN (honest miss, not a lie)
+    Amazon rev growth      $4,294M -> ABSTAIN (honest miss, not a lie)
+
+  NOT YET DONE:
+    - FULL local eval (run_eval.py --seed 42) with Ollama UP. The only number
+      that counts. FIX-D activating dead anti-patterns may shift OTHER answers
+      (could help OR surface new abstains) — must measure net effect.
+    - Pull REAL FinanceBench question text + gold to confirm op-margin vs
+      gross-margin and the two growth golds.
+    - Activision/Amazon growth still ABSTAIN — need 2-period extraction to
+      actually compute the %, not just avoid lying.
+    - Company name extracts as "NASDAQ Stock Market LLC" not "Adobe" — bug in
+      pdf_ingestor metadata; corrupts citations. OPEN.
+
+## WARNING_ON_84.2_PERCENT
+The 84.2% "KNOWN_GOOD_BENCHMARK" cited below is NOT real. It came from a custom
+Apple-Tesla eval with a false-overlap credit bug. When that bug was fixed the
+score fell to 20% -> 0% -> 13.3% (real). Do NOT treat 84.2% as achieved. The
+only real measured FinanceBench number is 13.3% (2026-06-20, but that run had
+Ollama OFF and FlagEmbedding missing on Colab — a crippled environment). A
+clean LOCAL eval has not been run since these fixes. No number is confirmed yet.
 
 ## BUILD_STEP
-Phase 2 — N20 + FIX-v5 (all eval bugs fixed). Ready for re-eval.
+Phase 1 hardening. All extraction fixes wired (MOVE-1..7 + structure-aware
+(metric,year) lookup + simplifier + reconcile verify layer). AWAITING the real
+measured eval number. Test 1 synthetic proved structured growth = 30.80% OK.
 
-## HONEST_TIER_GOALS (locked 2026-06-05)
+## WHAT_WAS_BUILT_2026-06-20 (all on PC, all self-test-verified)
+- Question simplifier (src/analysis/question_simplifier.py): strips ~25 filler
+  patterns + ~35 twisted→canonical phrase maps. Wired into composite_resolver
+  (routes on simplified text, computes on ORIGINAL to keep exact periods).
+- Structure-preserving tables: pdf_ingestor builds state.structured_tables
+  [{page, headers, rows, n_rows, n_cols}] in the same pdfplumber pass.
+  ADDITIVE — flattened table_cells untouched (27,976 cells intact).
+- Structure-aware (metric,year) lookup: plan_executor._lookup_structured is
+  Path 0 in _extract_value — finds the column whose header has the year, the
+  row matching a metric synonym, returns that exact cell. Threaded through
+  answer_question → execute_plan → composite_resolver (reads state.structured_tables).
+  FIXES period-collapse (OCF 0.00, YoY growth same-number). Test 1: Amazon
+  growth FY2017 = 30.80% via structured lookup. ✓
+- Reconcile verify layer (extract_lib/reconcile.py): accounting-identity checks
+  (Assets=L+E, current≤total, NI≤rev, cogs≤rev...). Catches wrong-cell picks +
+  the $2.9T concatenation artifact. Self-test 4/4. BUILT, not yet enforcing in
+  selection (detection only — safe). Registered in extract_lib/__init__.py.
+- GOLD/SILVER/DIAMOND triage in eval/run_financebench.py (_classify_failure +
+  write_summary). Auto-prints fix-priority map each run.
+- MOVE-7 grader abstention guard: "cannot determine" can't steal credit.
 
-TIER 1 (Phase 2 exit gate):
-  60-70% on OFFICIAL / RECOGNISED financial benchmarks
-  (FinanceBench, FinQA, ConvFinQA, TAT-QA, FinanceReasoning, HF leaderboards)
-  ETA: 4 weeks
+## LAST_MEASURED_EVAL (2026-06-20, SKIP_LLM, pre-structure-wiring)
+4/30 = 13.3%. Triage: 0 GOLD, 9 SILVER (wrong cell/period), 17 DIAMOND
+(RETRIEVAL_MISS — LLM was OFF, NOT failures). The 9 SILVER are the target of
+the structure-aware fix. Next run measures whether it flips them on real PDFs.
 
-TIER 2 (Final post-ML exit gate):
-  75-85% on same benchmarks + HuggingFace public boards
-  Requires: SFT + DPO fine-tune + XGB arbiter + universal extraction
-  ETA: +4 weeks after Tier 1
+## SIX_PHASE_ROADMAP (locked 2026-06-20)
+PHASE 1  Foundation: state schema, eval script, extraction fixes, triage. [HERE]
+PHASE 2  Retrieval system (BM25 + BGE-M3 + RRF). [mostly done]
+PHASE 3  Agent engine + PRODUCT layer:
+           - Model chooser: Ollama (local/$0) OR user API key; auto-detect
+             laptop RAM/GPU (psutil + torch.cuda) → recommend model size.
+           - Streamlit UI with API-key input box (user's own key, session-only,
+             never stored — keeps C1 $0 for our system).
+           - Fine-tuning DATA PREP (collection + quality filtering).
+PHASE 4  ML training:
+           - SFT on QUALITY-FILTERED financial QA (10K-50K diverse examples —
+             NOT 10M templated rows; volume hurts, quality+diversity win).
+           - DPO (beta=0.1 per C6).
+PHASE 5  Optimization + cleanup:
+           - Time optimization (ingest caching, parallel pages).
+           - Performance optimization (stay under 14GB RAM, C4).
+           - Dead-file / unused-data / stale-cache cleanup.
+PHASE 6  Report + release:
+           - Dashboard-style final report (Power BI / Tableau visual style):
+             accuracy by company, GOLD/SILVER/DIAMOND breakdown, cost=$0,
+             params=8B, reproducibility (seed=42), 2x-base-lift story.
+           - HuggingFace honest upload (MODEL_CARD.md exists).
 
-NO 90%+ promises. NO hallucinated numbers. Real calculated truth only.
-Top open-source on FinanceBench is currently 54% (GPT-4o+RAG).
-We aim to match/beat at $0 cost, 100% local.
+## HONEST_CEILING (unchanged, stated many times)
+Llama 3.1 8B realistic: ~30-35% now; ~40-47% MAX after full SFT/DPO/RLEF.
+World SOTA = GPT-4o+RAG ~54%. 55%+ with 8B = impossible honestly.
+NO projections published. Only confirmed measured results.
+
+## HONEST_TIER_GOALS (revised 2026-06-20 — supersedes the 60-85% below)
+The 60-70%/75-85% targets below are NOT achievable with Llama 3.1 8B and are
+retained only as historical record. Real honest targets: ~32% now, ~45% max.
+
+## ARCHIVE — earlier goals (historical, NOT current truth)
+
 
 See MASTER_TODO.md for the full plan.
 
