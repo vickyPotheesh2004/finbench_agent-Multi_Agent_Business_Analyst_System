@@ -61,6 +61,15 @@ MAX_TEXT_CHARS = 20_000_000
 # ~6 MB, well within the 14 GB RAM budget (C4).
 MAX_TABLES = 30000
 
+# FIX (2026-06-21): structured_tables must NOT share the flat-cell cap.
+# table_cells are INDIVIDUAL cells (tens of thousands); structured_tables are
+# WHOLE tables (a few hundred per 10-K). The 30000-cell cap fills up from the
+# front (cover/TOC/MD&A) and on big filings (CVS, JPMorgan, Nike) the actual
+# balance sheet / income statement sits PAST the cutoff and was being
+# truncated away entirely -> wrong-cell picks + RETRIEVAL_MISS. We keep ALL
+# structured_tables (they drive the normalizer) with a generous separate cap.
+MAX_STRUCTURED_TABLES = 20000
+
 MAX_HEADINGS = 3000
 
 HEADING_FONT_SIZE_MIN = 13.0
@@ -694,7 +703,7 @@ class PDFIngestor:
                 :MAX_TABLES
             ],
             "structured_tables": structured_tables[
-                :MAX_TABLES
+                :MAX_STRUCTURED_TABLES
             ],
             "heading_positions": self._dedupe_headings(
                 heading_positions

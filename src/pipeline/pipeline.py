@@ -100,6 +100,28 @@ try:
 except ImportError:
     get_llm_client = None
 
+# Universal numeric-answer sanity gate (2026-06-21). Rejects impossible
+# values (turnover 356, $15-trillion line items, a bare "23" for revenue) so
+# the question abstains/falls through to the LLM instead of returning garbage.
+try:
+    from src.analysis.answer_sanity_gate import sanity_check as _sanity_check
+except Exception:
+    _sanity_check = None
+
+
+def _answer_passes_gate(answer: str, question: str = "") -> bool:
+    """True if the answer is plausible (or the gate is unavailable / non-numeric).
+    False ONLY for a numeric answer that is implausible -> caller should abstain."""
+    if _sanity_check is None:
+        return True
+    try:
+        ok, reason = _sanity_check(answer or "", citation=answer or "", question=question or "")
+        if not ok:
+            logger.warning("[SANITY_GATE] rejected answer (%s): %s", reason, (answer or "")[:80])
+        return ok
+    except Exception:
+        return True
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -434,26 +456,40 @@ class FinBenchPipeline:
 
         if getattr(state, "formula_hit", False):
 
-            logger.info(
-                "[PIPELINE] Formula router answered: %s",
-                getattr(state, "formula_answer", ""),
-            )
+            _fa = getattr(state, "formula_answer", "") or ""
+            if not _answer_passes_gate(_fa, question):
+                # Formula produced an implausible number (e.g. AmEx tax 21.61
+                # when a different metric was wanted, or a sign-flipped ratio).
+                # Drop the formula hit and let the normal flow / LLM handle it
+                # instead of returning confident-wrong.
+                logger.warning(
+                    "[PIPELINE] formula_router answer rejected by sanity gate: %s",
+                    _fa[:80],
+                )
+                state.formula_hit = False
+                state.final_answer = ""
+                state.final_answer_pre_xgb = ""
+            else:
+                logger.info(
+                    "[PIPELINE] Formula router answered: %s",
+                    getattr(state, "formula_answer", ""),
+                )
 
-            state = _safe_run(
-                "N18 RLEF",
-                run_rlef_engine,
-                state,
-            )
+                state = _safe_run(
+                    "N18 RLEF",
+                    run_rlef_engine,
+                    state,
+                )
 
-            state = _safe_run(
-                "N19 Output",
-                run_output_generator,
-                state,
-            )
+                state = _safe_run(
+                    "N19 Output",
+                    run_output_generator,
+                    state,
+                )
 
-            cleanup_memory()
+                cleanup_memory()
 
-            return state
+                return state
 
         # ──────────────────────────────────────────────────────────────────────
         # Sniper Early Exit
@@ -488,6 +524,7 @@ class FinBenchPipeline:
             and _ans_has_number
             and not _is_n20_question
             and (_sniper_only or _sniper_conf >= 0.90)
+            and _answer_passes_gate(_sniper_ans, _q_lower)
         )
 
         if _sniper_exit_ok:
@@ -616,7 +653,8 @@ class FinBenchPipeline:
         try:
             from src.analysis.composite_resolver import run_composite_resolver
             _comp_ans = run_composite_resolver(state)
-            if _comp_ans.answered and _comp_ans.confidence >= 0.70:
+            if _comp_ans.answered and _comp_ans.confidence >= 0.70 \
+                    and _answer_passes_gate(_comp_ans.final_answer, question):
                 state.final_answer         = _comp_ans.final_answer
                 state.final_answer_pre_xgb = _comp_ans.final_answer
                 state.confidence_score     = _comp_ans.confidence
@@ -637,7 +675,7 @@ class FinBenchPipeline:
         # if the question is a simple value extraction. This solves Q1-style
         # questions in 1-2 seconds instead of 30 minutes of LLM work.
         _alt = _sniper_only_extract_fallback(state)
-        if _alt:
+        if _alt and _answer_passes_gate(_alt, question):
             state.final_answer         = _alt
             state.final_answer_pre_xgb = _alt
             state.confidence_score     = 0.75
@@ -687,7 +725,7 @@ class FinBenchPipeline:
             try:
                 from src.analysis.composite_resolver import run_composite_resolver
                 _comp_ans = run_composite_resolver(state)
-                if _comp_ans.answered:
+                if _comp_ans.answered and _answer_passes_gate(_comp_ans.final_answer, question):
                     # N20 found a deterministic answer — use it.
                     state.final_answer         = _comp_ans.final_answer
                     state.final_answer_pre_xgb = _comp_ans.final_answer
@@ -716,7 +754,7 @@ class FinBenchPipeline:
             else:
                 # FIX-B: Try extract_lib as second deterministic pass before giving up
                 _alt = _sniper_only_extract_fallback(state)
-                if _alt:
+                if _alt and _answer_passes_gate(_alt, question):
                     state.final_answer = _alt
                     state.final_answer_pre_xgb = _alt
                     state.confidence_score = 0.75

@@ -101,13 +101,70 @@ class CompositeAnswer:
 # Question classifier — pre-flight routing
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Narrative / qualitative question detector (2026-06-21). Returns True when a
+# question wants a TEXT answer (industry, diversification, customers, legal
+# proceedings, acquisitions list, yes/no rationale) rather than a single
+# number. Used to STOP question_lib from emitting a stray dollar value that
+# scores 0 and blocks the LLM. Deliberately conservative: a question that
+# names a concrete numeric metric (revenue, margin, ratio, DPO, turnover,
+# capex, EPS...) is NOT treated as narrative even if it also has narrative
+# words, so we never abstain on a real numeric question.
+_NUMERIC_METRIC_WORDS = (
+    "revenue", "net sales", "net income", "margin", "ratio", "turnover",
+    "dpo", "dso", "dio", "days payable", "days sales", "capex",
+    "capital expenditure", "eps", "earnings per share", "cogs",
+    "cost of", "assets", "liabilities", "equity", "cash flow",
+    "ebitda", "dividend", "inventory", "depreciation", "how much",
+    "how many times", "what is the", "what was the", "yoy",
+    "year-over-year", "year over year", "quick ratio", "current ratio",
+    "return on", "working capital", "tax rate", "effective tax",
+)
+_NARRATIVE_CUES = (
+    "what industry", "what is the nature", "what are the major",
+    "major acquisitions", "what acquisitions", "diversification",
+    "diversified", "product categories", "primary customers",
+    "key customers", "legal proceedings", "lawsuit", "litigation",
+    "key agenda", "agenda of", "what drove", "what caused", "why did",
+    "what is the purpose", "nature & purpose", "nature and purpose",
+    "restructuring", "primarily operate", "business segment",
+    "competitive", "strategy", "outlook", "guidance", "risk factor",
+    "who is", "is the ceo", "new ceo", "spin off", "spin-off",
+    "spinning off", "real change in sales", "real growth",
+    "adjusted non gaap", "adjusted non-gaap", "non gaap ebitda",
+    "non-gaap ebitda", "adj. ebitda", "adjusted ebitda",
+    "real change", "organic change", "organic growth",
+)
+
+
+def _is_narrative_question(question: str) -> bool:
+    """True for clearly qualitative questions that must NOT be answered with a
+    single extracted number. Conservative: a concrete numeric metric word
+    overrides the narrative cue so real numeric questions still compute."""
+    q = (question or "").lower()
+    if not q:
+        return False
+    has_narr = any(cue in q for cue in _NARRATIVE_CUES)
+    if not has_narr:
+        return False
+    # If the question ALSO names a concrete numeric metric, it's a real
+    # numeric question (e.g. "what drove the change in revenue" still wants a
+    # number sometimes) -> let it compute. Only abstain when it's PURELY
+    # narrative. Exception: 'real change in sales' / 'real growth' are the
+    # FinanceBench narrative-comparison traps -> always narrative.
+    if "real change in sales" in q or "real growth" in q:
+        return True
+    if any(w in q for w in _NUMERIC_METRIC_WORDS):
+        return False
+    return True
+
+
 def classify_question(question: str) -> str:
     """
     Return one of:
-      'decision'   — Is X capital-intensive? Is liquidity healthy?
-      'causal'     — What drove margin change? Why did revenue decline?
-      'segment'    — Which segment had X?
-      'other'      — fall through to existing numeric paths
+      'decision'   - Is X capital-intensive? Is liquidity healthy?
+      'causal'     - What drove margin change? Why did revenue decline?
+      'segment'    - Which segment had X?
+      'other'      - fall through to existing numeric paths
     """
     if not question:
         return "other"
@@ -269,6 +326,24 @@ def run_composite_resolver(state) -> CompositeAnswer:
         # exact periods ("FY2017 - FY2019"), metric names and operations that
         # the simplifier may have collapsed. Routing above uses the simplified
         # text; computation here uses the original.
+        #
+        # NARRATIVE GUARD (2026-06-21): the 150-run showed question_lib
+        # answering QUALITATIVE questions with a stray dollar number
+        # ("Does Boeing have product diversification?" -> $66,608M;
+        # "What industry does Amcor operate in?" -> a number). Those are
+        # reading-comprehension questions with a TEXT gold answer; emitting a
+        # number scores 0 AND blocks the LLM. If the question is clearly
+        # narrative/qualitative, ABSTAIN here so it falls through to the LLM.
+        if _is_narrative_question(original_question):
+            logger.info("[composite] narrative question -> abstain from "
+                        "question_lib numeric path: %r",
+                        original_question[:70])
+            return CompositeAnswer(
+                answered=False,
+                audit_trail={"qtype": qtype,
+                             "reason": "narrative_question_abstain"},
+            )
+
         if _HAS_QUESTION_LIB and _ql_answer_question is not None:
             try:
                 ql_res = _ql_answer_question(
