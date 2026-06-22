@@ -1,114 +1,111 @@
-# ════════════════════════════════════════════════════════════════════════════
-#  FINBENCH — COLAB T4 LLM EVAL (the REAL run — no SKIP_LLM)
-#  Runs Llama 3.1 8B on a free T4 GPU at ~15 sec/call instead of 3 min/call.
-#  All 8 libs + idea-1 (briefing/tools) + idea-2 (intent classifier) ACTIVE.
-# ════════════════════════════════════════════════════════════════════════════
-#
-#  HOW TO USE:
-#  1. Go to https://colab.research.google.com  → New notebook
-#  2. Runtime → Change runtime type → T4 GPU → Save
-#  3. Copy each CELL below into a separate Colab cell, run top to bottom
-#  4. Push your repo + 8 libs to GitHub first (see CELL 2 — replace the URLs)
-#
-#  Each numbered block = one Colab cell.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# FinBench — Colab FULL eval WITH LLM (Ollama on)  — the run that actually scores
+# Each cell below is one Colab cell. Run top to bottom on a T4 GPU runtime.
+# This UPDATES your repo (git pull), re-zips/installs the 8 libs, starts
+# Ollama + pulls llama3.1:8b, then runs all 150 with the LLM live.
+# ============================================================================
 
-
-# ─── CELL 1 — confirm GPU ────────────────────────────────────────────────────
-!nvidia-smi
-# You MUST see "Tesla T4" here. If "command not found" → Runtime → Change
-# runtime type → T4 GPU. Without GPU this whole thing is pointless.
-
-
-# ─── CELL 2 — clone your repo + all 8 libs from GitHub ───────────────────────
-# FIRST push everything to GitHub from your PC:
-#   cd D:\projects\finbench_agent ; git add . ; git commit -m "colab" ; git push
-#   (and push each of the 8 lib repos too, OR vendor them — see note below)
-#
-# Replace <YOUR_GITHUB> with your username/repo.
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 1 — clone OR update the repo (git commands up front, like before)
+# ─────────────────────────────────────────────────────────────────────────
+import os
 %cd /content
-!git clone https://github.com/<YOUR_GITHUB>/finbench_agent.git
-# If your 8 libs are separate repos, clone each:
-# !git clone https://github.com/<YOUR_GITHUB>/maths_lib.git
-# !git clone https://github.com/<YOUR_GITHUB>/fina_extractor_lib.git
-# ... etc for all 8
-#
-# EASIER OPTION: zip the libs on your PC and upload via Colab's file panel,
-# then unzip here:
-#   from google.colab import files; files.upload()   # upload libs.zip
-#   !unzip -q libs.zip -d /content/libs
+if os.path.isdir('/content/finbench_agent/.git'):
+    %cd /content/finbench_agent
+    !git fetch origin && git reset --hard origin/main && git log --oneline -3
+else:
+    !git clone https://github.com/vickyPotheesh2004/finbench_agent-Multi_Agent_Business_Analyst_System.git finbench_agent
+    %cd /content/finbench_agent
+    !git log --oneline -3
+# dataset (questions + 150 PDFs)
+!test -d financebench_dataset/financebench || git clone https://github.com/patronus-ai/financebench.git financebench_dataset/financebench
+print("repo + dataset ready")
 
 
-# ─── CELL 3 — mount Drive (so results survive disconnect) ────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 2 — mount Drive (for autosaved results) + results dir
+# ─────────────────────────────────────────────────────────────────────────
 from google.colab import drive
 drive.mount('/content/drive')
 !mkdir -p /content/drive/MyDrive/finbench_results
+print("drive mounted")
 
 
-# ─── CELL 4 — install Ollama ─────────────────────────────────────────────────
-!curl -fsSL https://ollama.com/install.sh | sh
-
-
-# ─── CELL 5 — start Ollama server in the background ──────────────────────────
-import subprocess, time, os
-os.environ["OLLAMA_HOST"] = "127.0.0.1:11434"
-subprocess.Popen(["ollama", "serve"])
-time.sleep(8)
-print("Ollama server started")
-
-
-# ─── CELL 6 — pull Llama 3.1 8B (the C3 model) ───────────────────────────────
-!ollama pull llama3.1:8b
-# ~4.7 GB download. On T4 this runs at ~15 sec per generation (vs 3 min on CPU).
-
-
-# ─── CELL 7 — install Python deps + your 8 libs (editable) ───────────────────
-%cd /content/finbench_agent
-!pip install -q -r requirements.txt 2>/dev/null || echo "no requirements.txt — installing core deps"
-!pip install -q bm25s pdfplumber sentence-transformers chromadb rapidfuzz \
-    "numpy>=1.26,<2.3" "pandas>=2.2,<2.3" "scipy>=1.13,<1.14" \
-    rank-bm25 jinja2 pydantic scikit-learn xgboost ollama jinja2 fitz pymupdf
-# Install your 8 libs editable (adjust paths to where you cloned/unzipped them):
-for lib in ["maths_lib","fina_extractor_lib","fina_pattern_lib","fina_format_lib",
-            "Fina_Logic_lib","fina_algo_lib","verify_lib_","fina_question_lib"]:
-    !pip install -q -e /content/libs/{lib} 2>/dev/null || echo "skip {lib}"
-
-
-# ─── CELL 8 — point pipeline at Ollama + verify libs load ────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 3 — upload the 8-lib zip (finbench_libs.zip) and unpack
+#   (build the zip on your PC:  the 8 fina_* / *_lib folders at repo root)
+#   If the libs are ALREADY committed in the repo, SKIP this cell.
+# ─────────────────────────────────────────────────────────────────────────
 import os
-os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"
-os.environ.pop("SKIP_LLM", None)        # ← CRITICAL: LLM is ON
-os.environ.pop("SNIPER_ONLY", None)
+if not os.path.isdir('/content/finbench_agent/fina_question_lib'):
+    from google.colab import files
+    up = files.upload()                         # pick finbench_libs.zip
+    !rm -rf /content/libs && mkdir -p /content/libs
+    !unzip -q finbench_libs.zip -d /content/finbench_agent
+print("libs present:", [d for d in os.listdir('/content/finbench_agent') if d.endswith('_lib') or d.startswith('fina')])
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 4 — install python deps + the 8 libs (editable)
+# ─────────────────────────────────────────────────────────────────────────
 %cd /content/finbench_agent
-!python -m src.utils.lib_bridge        # should show 7/7 installed
-!python -c "from src.analysis.llm_briefing import build_briefing; print('briefing OK')"
-!python -c "from src.utils.llm_client import OllamaClient; c=OllamaClient(); print('LLM available:', c.is_available())"
-# LLM available: True  ← must say True before proceeding
+!pip install -q pdfplumber pymupdf rank-bm25 numpy pandas requests FlagEmbedding 2>/dev/null
+import subprocess, os
+for lib in ["Fina_Maths_lib","fina_extractor_lib","fina_pattern_lib","fina_format_lib",
+            "Fina_Logic_lib","fina_algo_lib","verify_lib_","fina_question_lib"]:
+    p = f"/content/finbench_agent/{lib}"
+    if os.path.isdir(p): subprocess.run(["pip","install","-q","-e",p], check=False)
+print("deps + libs installed")
 
 
-# ─── CELL 9 — SMOKE TEST: 5 questions WITH the LLM ───────────────────────────
-# This is the moment of truth — narrative questions get the LLM + briefing.
-!python eval/run_financebench.py --seed 42 --limit 5
-# Watch: narrative questions (Q4/Q5) should now get REAL answers, not RETRIEVAL_MISS.
-# Each question ~30-90 sec (LLM running). 5 questions ≈ 5-8 min.
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 5 — install + START Ollama, pull llama3.1:8b  (THE missing piece)
+# ─────────────────────────────────────────────────────────────────────────
+!curl -fsSL https://ollama.com/install.sh | sh
+import subprocess, time, requests
+# start the server in the background
+subprocess.Popen(["ollama","serve"])
+time.sleep(8)
+# pull the EXACT model the code expects (DEFAULT_MODEL = llama3.1:8b)
+!ollama pull llama3.1:8b
+# verify it answers
+for _ in range(10):
+    try:
+        r = requests.post("http://127.0.0.1:11434/api/chat",
+                          json={"model":"llama3.1:8b",
+                                "messages":[{"role":"user","content":"say OK"}],
+                                "stream":False}, timeout=60)
+        print("OLLAMA OK:", r.json().get("message",{}).get("content","")[:40]); break
+    except Exception as e:
+        print("waiting for ollama...", e); time.sleep(6)
 
 
-# ─── CELL 10 — FULL 150-QUESTION RUN (the real benchmark number) ─────────────
-# Only run this after CELL 9 looks good. Takes ~4-6 hours on T4.
-# Results autosave to Drive every question (survives disconnect).
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 6 — sanity: formula self-test still hits gold (deterministic engine)
+# ─────────────────────────────────────────────────────────────────────────
+%cd /content/finbench_agent/fina_question_lib/src
+!python -m question_lib.advanced_formulas
+%cd /content/finbench_agent
+# expect: ROA -0.0153, fixed_asset_turnover 24.26, DPO 93.86, revenue 30.8%, op-income 65.4%
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 7 — RUN ALL 150 WITH THE LLM LIVE  (no --sniper-only this time)
+#   The preflight will confirm Ollama+model before starting.
+#   ~2-3 hrs on T4. Autosaves to Drive after every question.
+# ─────────────────────────────────────────────────────────────────────────
+%cd /content/finbench_agent
 !python eval/run_financebench.py --seed 42
-# When done, the summary .md in /content/drive/MyDrive/finbench_results/
-# has your REAL confirmed FinanceBench accuracy. THAT is your HuggingFace number.
 
 
-# ─── CELL 11 — show the final score ──────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+# CELL 8 — read the real accuracy + GOLD/SILVER/DIAMOND triage
+# ─────────────────────────────────────────────────────────────────────────
 import glob, json
-results = sorted(glob.glob('/content/drive/MyDrive/finbench_results/financebench_2*.json'))
-if results:
-    data = json.load(open(results[-1]))
-    n = len(data); c = sum(1 for r in data if r.get('correct'))
-    print(f"\n{'='*50}\nFINAL: {c}/{n} = {100*c/n:.1f}% on FinanceBench\n{'='*50}")
-    # breakdown by pod
-    from collections import Counter
-    pods = Counter(r.get('winning_pod','?') for r in data if r.get('correct'))
-    print("Correct answers by pod:", dict(pods))
+summ = sorted(glob.glob("/content/drive/MyDrive/finbench_results/financebench_summary_*.md"))
+if summ: print(open(summ[-1]).read())
+res = [r for r in sorted(glob.glob("/content/drive/MyDrive/finbench_results/financebench_*.json"))
+       if "summary" not in r and "partial" not in r]
+if res:
+    data = json.load(open(res[-1])); n=len(data); ok=sum(1 for r in data if r.get("correct"))
+    print(f"\nFINAL (LLM live): {ok}/{n} = {100*ok/n:.1f}%")
