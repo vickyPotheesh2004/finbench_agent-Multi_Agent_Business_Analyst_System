@@ -839,16 +839,27 @@ class Chunker:
         if not chunks:
             return
 
-        disabled = os.environ.get(
-            "DISABLE_CHROMADB",
-            "",
-        ).lower()
+        disabled = any(
+            os.environ.get(k, "").lower() in ("1", "true", "yes")
+            for k in (
+                "DISABLE_CHROMADB",
+                "DISABLE_CHROMA",
+                "DISABLE_BGE",
+                "SNIPER_ONLY",
+            )
+        )
 
-        if disabled in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if not disabled:
+            # also skip if chromadb isn't installed (Colab T4 / lean runs),
+            # so we never throw ModuleNotFoundError per-question.
+            try:
+                import importlib.util
+                if importlib.util.find_spec("chromadb") is None:
+                    disabled = True
+            except Exception:
+                disabled = True
+
+        if disabled:
 
             logger.info(
                 "[N03] Chroma disabled"

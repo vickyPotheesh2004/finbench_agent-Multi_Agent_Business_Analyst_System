@@ -38,7 +38,13 @@ logger = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 import os as _os
-MAX_RETRIES         = 3
+# MAX_RETRIES is env-tunable: a full 150-Q eval on a time-limited T4 cannot
+# afford up to 7 LLM calls/question (1 planner + 3*(impl+validator)). Set
+# PIV_MAX_RETRIES=1 (or 0) for eval speed; default 3 for quality single runs.
+try:
+    MAX_RETRIES = max(0, int(_os.environ.get("PIV_MAX_RETRIES", "3")))
+except Exception:
+    MAX_RETRIES = 3
 OLLAMA_MODEL        = _os.environ.get("PIV_OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_FALLBACK     = "llama3.1:8b"   # C3: Llama 3.1 8B is the constraint base model
 OLLAMA_BASE_URL     = _os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -116,10 +122,18 @@ class OllamaClient:
         self,
         model:    str = OLLAMA_MODEL,
         base_url: str = OLLAMA_BASE_URL,
-        timeout:  int = 60,           # was 120 — Bug #5
+        timeout:  int = None,
     ) -> None:
         self.model    = model
         self.base_url = base_url
+        # 60s was too short: a warm-but-busy llama3.1:8b on a shared T4 can take
+        # 90-180s for the long structured PIV outputs -> spurious 'timed out'.
+        # Env-tunable; default 240 to match the heavy client (llm_client.py).
+        if timeout is None:
+            try:
+                timeout = int(_os.environ.get("PIV_OLLAMA_TIMEOUT", "240"))
+            except Exception:
+                timeout = 240
         self.timeout  = timeout
 
     def chat(self, prompt: str, temperature: float = 0.1) -> str:

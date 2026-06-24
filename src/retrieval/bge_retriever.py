@@ -175,17 +175,22 @@ class BGERetriever:
 
         self._model = None
 
-        self._disabled = bool(
-            os.environ.get(
-                "DISABLE_BGE",
-                "",
-            )
-        ) or bool(
-            os.environ.get(
-                "DISABLE_CHROMADB",
-                "",
-            )
-        )
+        # Disabled if ANY of these env flags are set, OR if chromadb is simply
+        # not installed (Colab T4 / sniper runs). Checking import availability
+        # here means BGE silently no-ops instead of throwing ModuleNotFoundError
+        # on every single question (which spammed the 2026-06-22 LLM run).
+        _flag = any(os.environ.get(k, "") for k in (
+            "DISABLE_BGE", "DISABLE_CHROMADB", "DISABLE_CHROMA",
+            "SNIPER_ONLY",
+        ))
+        if not _flag:
+            try:
+                import importlib.util
+                if importlib.util.find_spec("chromadb") is None:
+                    _flag = True
+            except Exception:
+                _flag = True
+        self._disabled = bool(_flag)
 
     # ─────────────────────────────────────────────────────────────────────
 

@@ -57,6 +57,18 @@ def get_reranker():
     if _RERANKER_INSTANCE is not None:
         return _RERANKER_INSTANCE
 
+    # Lean-mode guard (2026-06-22): the FlagReranker is a GPU cross-encoder that
+    # collides with Ollama on a single 14GB T4 -> 'CUDA out of memory' every
+    # question + LLM spilling to CPU (30-50 min/question). When any of these
+    # flags is set we skip the cross-encoder entirely and rank by RRF +
+    # financial boost, which is fast and needs no GPU. Give the GPU to Ollama.
+    import os
+    if any(os.environ.get(k, "") for k in (
+        "DISABLE_CROSS_ENCODER", "DISABLE_RERANKER", "DISABLE_BGE",
+        "SNIPER_ONLY",
+    )):
+        return None
+
     try:
 
         from FlagEmbedding import (
